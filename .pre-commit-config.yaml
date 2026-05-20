@@ -1,0 +1,29 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: no-commit-to-branch
+        args: ['--branch', 'main']
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ['--baseline', '.secrets.baseline']
+
+  - repo: local
+    hooks:
+      - id: forbid-env-files
+        name: Block .env files from being committed
+        entry: .hooks/forbid-env-files.sh
+        language: script
+        types: [file]
+
+      - id: forbid-service-versions
+        name: Check for hardcoded Fastly service version numbers
+        entry: .hooks/forbid-service-versions.sh
+        language: script
+        types: [file]
+        verbose: true

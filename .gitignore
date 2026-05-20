@@ -1,0 +1,38 @@
+# Secrets and environment files
+.env
+*.env
+!.env.example
+
+# macOS
+.DS_Store
+
+# Rust / Compute
+target/
+pkg/
+
+# Node.js
+node_modules/
+
+# Go
+bin/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+!*.tfvars.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code local settings
+.claude/settings.local.json

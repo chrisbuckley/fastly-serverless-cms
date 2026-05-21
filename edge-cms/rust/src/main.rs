@@ -1,4 +1,8 @@
+mod auth;
+mod cache;
+mod markdown;
 mod models;
+mod templates;
 
 use fastly::http::StatusCode;
 use fastly::{Error, Request, Response};

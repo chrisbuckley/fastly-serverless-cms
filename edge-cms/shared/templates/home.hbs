@@ -4,7 +4,14 @@
   <article class="post-card">
     {{#if featured_image}}
     <div class="post-card-featured">
-      <img src="{{featured_image}}?width=800&format=webp" alt="{{title}}">
+      <picture>
+        <source type="image/webp"
+          srcset="{{featured_image}}?width=480&format=webp 480w,
+                  {{featured_image}}?width=800&format=webp 800w,
+                  {{featured_image}}?width=1280&format=webp 1280w"
+          sizes="(max-width: 640px) 100vw, 800px">
+        <img src="{{featured_image}}?width=800" alt="{{title}}" loading="lazy">
+      </picture>
     </div>
     {{/if}}
     <div class="post-card-body">

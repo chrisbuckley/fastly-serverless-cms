@@ -1,0 +1,145 @@
+output "vcl_service_id" {
+  description = "VCL CDN service ID — use this as purge_service_id in the Secret Store"
+  value       = fastly_service_vcl.cdn.id
+}
+
+output "compute_service_id" {
+  description = "Compute app service ID"
+  value       = fastly_service_compute.app.id
+}
+
+output "content_kv_store_id" {
+  description = "KV Store ID for post content, index, sidebar"
+  value       = fastly_kvstore.content.id
+}
+
+output "secret_store_id" {
+  description = "Secret Store ID — populate manually after apply"
+  value       = fastly_secretstore.secrets.id
+}
+
+output "fos_access_key_id" {
+  description = "Object Storage access key ID"
+  value       = fastly_object_storage_access_keys.fos.access_key_id
+}
+
+output "fos_secret_key" {
+  description = "Object Storage secret key"
+  value       = fastly_object_storage_access_keys.fos.secret_key
+  sensitive   = true
+}
+
+output "fos_dict_id" {
+  description = "Private VCL dictionary ID for FOS SigV4 credentials"
+  value       = { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_fos_creds"]
+}
+
+# ---------------------------------------------------------------------------
+# Squarespace DNS — routing CNAMEs
+# Add these to route traffic to Fastly.
+# j.sni.global.ssl.fastly.net serves both HTTP and HTTPS once TLS is active.
+# ---------------------------------------------------------------------------
+
+output "squarespace_dns_routing_cnames" {
+  description = "Add these two CNAME records in Squarespace DNS"
+  value = {
+    "${var.domain}."     = "CNAME  j.sni.global.ssl.fastly.net"
+    "app.${var.domain}." = "CNAME  j.sni.global.ssl.fastly.net"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# TLS — must be provisioned via main account (automation account lacks TLS)
+# ---------------------------------------------------------------------------
+
+output "tls_provisioning_commands" {
+  description = "Run these with your MAIN account token to provision Let's Encrypt certs"
+  value       = <<-EOT
+    MAIN_TOKEN="<your-main-fastly-api-token>"
+
+    FASTLY_API_TOKEN=$MAIN_TOKEN fastly tls-subscription create \
+      --domain=${var.domain} --cert-authority=lets-encrypt
+
+    FASTLY_API_TOKEN=$MAIN_TOKEN fastly tls-subscription create \
+      --domain=app.${var.domain} --cert-authority=lets-encrypt
+
+    # Then check for DNS validation records to add in Squarespace:
+    FASTLY_API_TOKEN=$MAIN_TOKEN fastly tls-subscription list
+  EOT
+}
+
+# ---------------------------------------------------------------------------
+# Post-apply checklist
+# ---------------------------------------------------------------------------
+
+output "next_steps" {
+  description = "Post-apply checklist with exact CLI commands"
+  value       = <<-EOT
+
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │  Edge CMS — post-apply checklist                                     │
+    └──────────────────────────────────────────────────────────────────────┘
+
+    IDs (copy these — used in every command below):
+      VCL service:    ${fastly_service_vcl.cdn.id}
+      Compute svc:    ${fastly_service_compute.app.id}
+      KV Store:       ${fastly_kvstore.content.id}
+      Secret Store:   ${fastly_secretstore.secrets.id}
+      FOS key ID:     ${fastly_object_storage_access_keys.fos.access_key_id}
+      FOS dict:       ${ { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_fos_creds"] }
+
+    ── DNS (Squarespace) ────────────────────────────────────────────────────
+
+    Routing CNAMEs (see squarespace_dns_routing_cnames output):
+      ${var.domain}        →  j.sni.global.ssl.fastly.net
+      app.${var.domain}    →  j.sni.global.ssl.fastly.net
+
+    TLS validation CNAMEs — after running tls_provisioning_commands:
+      terraform output tls_provisioning_commands   # shows CLI commands
+      # then: fastly tls-subscription list         # shows CNAME records to add
+
+    ── Secrets ─────────────────────────────────────────────────────────────
+
+    # Generate admin password hash (Python bcrypt):
+    BCRYPT=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'YOUR_PASSWORD', bcrypt.gensalt()).decode())")
+
+    SSID="${fastly_secretstore.secrets.id}"
+    fastly secret-store-entry create --store-id=$SSID --name=admin_password  --secret="$BCRYPT"
+    fastly secret-store-entry create --store-id=$SSID --name=hmac_key        --secret="$(openssl rand -base64 32)"
+    fastly secret-store-entry create --store-id=$SSID --name=fastly_api_token --secret="${fastly_object_storage_access_keys.fos.access_key_id}"
+    fastly secret-store-entry create --store-id=$SSID --name=purge_service_id --secret="${fastly_service_vcl.cdn.id}"
+    fastly secret-store-entry create --store-id=$SSID --name=fos_access_key_id --secret="${fastly_object_storage_access_keys.fos.access_key_id}"
+    fastly secret-store-entry create --store-id=$SSID --name=fos_secret_key    --secret="$(terraform output -raw fos_secret_key)"
+
+    ── VCL Dictionary (FOS SigV4 credentials) ──────────────────────────────
+
+    VCL_SID="${fastly_service_vcl.cdn.id}"
+    DICT_ID="${ { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_fos_creds"] }"
+
+    fastly service-dictionary-item create --service-id=$VCL_SID --dictionary-id=$DICT_ID \
+      --key=access_key_id --value="${fastly_object_storage_access_keys.fos.access_key_id}"
+    fastly service-dictionary-item create --service-id=$VCL_SID --dictionary-id=$DICT_ID \
+      --key=secret_key --value="$(terraform output -raw fos_secret_key)"
+
+    ── Object Storage bucket ────────────────────────────────────────────────
+
+    export AWS_ACCESS_KEY_ID="${fastly_object_storage_access_keys.fos.access_key_id}"
+    export AWS_SECRET_ACCESS_KEY="$(terraform output -raw fos_secret_key)"
+    aws s3 mb s3://${var.fos_bucket} \
+      --endpoint-url https://${var.fos_region}.object.fastlystorage.app \
+      --region ${var.fos_region}
+
+    ── KV seed (empty initial state) ───────────────────────────────────────
+
+    KVID="${fastly_kvstore.content.id}"
+    fastly kv-store-entry create --store-id=$KVID --key=_index   --value='{"posts":[]}'
+    fastly kv-store-entry create --store-id=$KVID --key=_sidebar --value='{"items":[]}'
+
+    ── NGWAF (optional) ────────────────────────────────────────────────────
+
+    Provision NGWAF workspace in the NGWAF console, link to VCL service
+    ${fastly_service_vcl.cdn.id}, then add to vcl.tf:
+      product_enablement { ngwaf { enabled = true } }
+
+  EOT
+}

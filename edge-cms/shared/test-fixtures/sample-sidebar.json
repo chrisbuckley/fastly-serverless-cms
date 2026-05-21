@@ -1,0 +1,21 @@
+{
+  "items": [
+    {
+      "type": "category",
+      "label": "Getting Started",
+      "slug": "getting-started",
+      "children": ["hello-world"]
+    },
+    {
+      "type": "link",
+      "label": "GitHub",
+      "url": "https://github.com",
+      "icon": "github"
+    },
+    {
+      "type": "link",
+      "label": "Fastly Docs",
+      "url": "https://docs.fastly.com"
+    }
+  ]
+}

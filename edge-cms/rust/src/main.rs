@@ -1,3 +1,5 @@
+mod models;
+
 use fastly::http::StatusCode;
 use fastly::{Error, Request, Response};
 

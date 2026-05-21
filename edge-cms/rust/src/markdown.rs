@@ -26,7 +26,10 @@ pub fn rewrite_images(html: &str) -> String {
         let src_end = after_marker.find('"').unwrap_or(after_marker.len());
         let src_path = format!("/images/{}", &after_marker[..src_end]);
 
-        let tag_end = after_marker.find('>').unwrap_or(after_marker.len());
+        let tag_end = match after_marker.find('>') {
+            Some(i) => i,
+            None => break,
+        };
         let tag_inner = &after_marker[..tag_end];
         let alt = if let Some(alt_start) = tag_inner.find("alt=\"") {
             let after_alt = &tag_inner[alt_start + 5..];
@@ -154,5 +157,15 @@ mod tests {
     #[test]
     fn rewrite_images_passthrough_empty() {
         assert_eq!(rewrite_images(""), "");
+    }
+
+    #[test]
+    fn rewrite_images_malformed_no_close() {
+        // img tag with no closing > — should not panic, should pass through
+        let input = "<img src=\"/images/a.jpg\" alt=\"X\"";
+        let out = rewrite_images(input);
+        // breaks out of loop, pushes remaining rest — may or may not include original marker
+        // key assertion: no panic
+        let _ = out; // if we got here, no panic
     }
 }

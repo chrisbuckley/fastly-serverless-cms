@@ -1,0 +1,1454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Edge CMS — Post Editor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,600;0,9..144,700;0,9..144,800;1,9..144,400&family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /* =========================================================
+       Design Tokens
+       ========================================================= */
+    :root {
+      /* Reader palette (for preview pane) */
+      --bg: #f5f0e8;
+      --bg-card: #fffdf9;
+      --text: #2a2520;
+      --text-muted: #7a7068;
+      --text-light: #a89e94;
+      --accent: #1b6b52;
+      --accent-hover: #14503e;
+      --accent-light: #e8f3ef;
+      --terracotta: #c4593a;
+      --terracotta-light: #fdf0ec;
+      --gold: #b8a47e;
+      --gold-light: #f5f0e5;
+      --border: #e5ddd3;
+      --border-light: #ede7de;
+
+      /* Admin-specific */
+      --admin-bg: #f0ede8;
+      --admin-surface: #faf8f5;
+      --admin-topbar: #2a2520;
+      --admin-topbar-text: #e5ddd3;
+      --admin-input-bg: #ffffff;
+      --admin-input-border: #ddd6cc;
+      --admin-input-focus: var(--accent);
+      --admin-editor-bg: #1e1c19;
+      --admin-editor-text: #e0dcd5;
+      --admin-editor-gutter: #3a3630;
+      --admin-editor-line: #a89e94;
+
+      /* Fonts */
+      --font-display: 'Fraunces', serif;
+      --font-body: 'DM Sans', sans-serif;
+      --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+
+      /* Shadows */
+      --shadow-sm: 0 1px 3px rgba(42, 37, 32, 0.06);
+      --shadow-md: 0 4px 12px rgba(42, 37, 32, 0.08);
+      --shadow-lg: 0 8px 30px rgba(42, 37, 32, 0.1);
+
+      /* Layout */
+      --topbar-height: 52px;
+    }
+
+    /* =========================================================
+       Reset & Base
+       ========================================================= */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html {
+      font-size: 16px;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    body {
+      font-family: var(--font-body);
+      color: var(--text);
+      background: var(--admin-bg);
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      opacity: 0;
+      animation: fadeIn 0.4s ease 0.1s forwards;
+    }
+
+    @keyframes fadeIn {
+      to { opacity: 1; }
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Subtle noise texture (matches reader) */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      opacity: 0.02;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 9999;
+    }
+
+    /* =========================================================
+       Top Bar
+       ========================================================= */
+    .topbar {
+      background: var(--admin-topbar);
+      color: var(--admin-topbar-text);
+      height: var(--topbar-height);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 1.25rem;
+      flex-shrink: 0;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .topbar-logo {
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 1.15rem;
+      color: #fff;
+      text-decoration: none;
+      letter-spacing: -0.02em;
+      font-variation-settings: 'opsz' 28;
+    }
+
+    .topbar-logo span { color: var(--accent); }
+
+    .topbar-divider {
+      width: 1px;
+      height: 20px;
+      background: rgba(255, 255, 255, 0.15);
+    }
+
+    .topbar-label {
+      font-size: 0.72rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--gold);
+      background: rgba(184, 164, 126, 0.12);
+      padding: 0.2rem 0.6rem;
+      border-radius: 4px;
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .topbar-link {
+      font-size: 0.8rem;
+      color: var(--admin-topbar-text);
+      text-decoration: none;
+      padding: 0.35rem 0.65rem;
+      border-radius: 5px;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .topbar-link:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+    }
+
+    .topbar-link svg {
+      width: 14px;
+      height: 14px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .btn-logout {
+      font-family: var(--font-body);
+      font-size: 0.8rem;
+      color: var(--admin-topbar-text);
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 0.35rem 0.85rem;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn-logout:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: #fff;
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    /* =========================================================
+       Page Content
+       ========================================================= */
+    .page-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      max-width: 1400px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 1.5rem 1.5rem 0;
+      animation: fadeUp 0.4s ease 0.2s both;
+    }
+
+    /* =========================================================
+       Metadata Section
+       ========================================================= */
+    .metadata {
+      background: var(--admin-surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.75rem 2rem;
+      margin-bottom: 1.25rem;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .metadata-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem 1.75rem;
+    }
+
+    .field { display: flex; flex-direction: column; }
+
+    .field-full { grid-column: 1 / -1; }
+
+    .field label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      margin-bottom: 0.4rem;
+    }
+
+    .field input[type="text"],
+    .field textarea,
+    .field select {
+      font-family: var(--font-body);
+      font-size: 0.9rem;
+      color: var(--text);
+      background: var(--admin-input-bg);
+      border: 1px solid var(--admin-input-border);
+      border-radius: 6px;
+      padding: 0.6rem 0.85rem;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      outline: none;
+    }
+
+    .field input[type="text"]:focus,
+    .field textarea:focus,
+    .field select:focus {
+      border-color: var(--admin-input-focus);
+      box-shadow: 0 0 0 3px rgba(27, 107, 82, 0.1);
+    }
+
+    .field-title input {
+      font-family: var(--font-display);
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      font-variation-settings: 'opsz' 36;
+      padding: 0.5rem 0.85rem;
+      border-color: transparent;
+      background: transparent;
+    }
+
+    .field-title input:focus {
+      border-color: var(--admin-input-focus);
+      background: var(--admin-input-bg);
+    }
+
+    .field-title input::placeholder {
+      color: var(--text-light);
+    }
+
+    .field-slug {
+      position: relative;
+    }
+
+    .slug-prefix {
+      position: absolute;
+      left: 0.85rem;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 0.85rem;
+      color: var(--text-light);
+      font-family: var(--font-mono);
+      font-weight: 400;
+      pointer-events: none;
+    }
+
+    .field-slug input {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      padding-left: 5.5rem;
+      color: var(--accent);
+    }
+
+    .field textarea {
+      resize: vertical;
+      min-height: 60px;
+      line-height: 1.6;
+    }
+
+    .field select {
+      cursor: pointer;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%237a7068' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 0.75rem center;
+      padding-right: 2rem;
+    }
+
+    /* --- Tags Input --- */
+    .tags-input-wrapper {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      background: var(--admin-input-bg);
+      border: 1px solid var(--admin-input-border);
+      border-radius: 6px;
+      padding: 0.4rem 0.6rem;
+      cursor: text;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      min-height: 42px;
+      align-items: center;
+    }
+
+    .tags-input-wrapper:focus-within {
+      border-color: var(--admin-input-focus);
+      box-shadow: 0 0 0 3px rgba(27, 107, 82, 0.1);
+    }
+
+    .tag-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      font-size: 0.78rem;
+      font-weight: 500;
+      padding: 0.22rem 0.55rem;
+      border-radius: 100px;
+      background: var(--accent-light);
+      color: var(--accent);
+      animation: fadeIn 0.15s ease;
+      user-select: none;
+    }
+
+    .tag-pill:nth-child(3n+2) {
+      background: var(--terracotta-light);
+      color: var(--terracotta);
+    }
+
+    .tag-pill:nth-child(3n) {
+      background: var(--gold-light);
+      color: #8a7650;
+    }
+
+    .tag-pill-remove {
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      font-size: 0.7rem;
+      line-height: 1;
+      transition: all 0.15s;
+      opacity: 0.6;
+    }
+
+    .tag-pill-remove:hover {
+      opacity: 1;
+      background: rgba(0,0,0,0.08);
+    }
+
+    .tags-input {
+      border: none;
+      outline: none;
+      font-family: var(--font-body);
+      font-size: 0.85rem;
+      background: transparent;
+      color: var(--text);
+      flex: 1;
+      min-width: 80px;
+      padding: 0.2rem 0;
+    }
+
+    .tags-input::placeholder { color: var(--text-light); }
+
+    /* --- Image Upload Zone --- */
+    .image-upload-zone {
+      border: 2px dashed var(--admin-input-border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: var(--admin-input-bg);
+      min-height: 100px;
+    }
+
+    .image-upload-zone:hover,
+    .image-upload-zone.dragover {
+      border-color: var(--accent);
+      background: var(--accent-light);
+    }
+
+    .image-upload-zone.dragover {
+      transform: scale(1.01);
+    }
+
+    .image-upload-icon {
+      width: 36px;
+      height: 36px;
+      color: var(--text-light);
+      transition: color 0.2s;
+    }
+
+    .image-upload-zone:hover .image-upload-icon,
+    .image-upload-zone.dragover .image-upload-icon {
+      color: var(--accent);
+    }
+
+    .image-upload-text {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      text-align: center;
+    }
+
+    .image-upload-text strong {
+      color: var(--accent);
+    }
+
+    .image-upload-hint {
+      font-size: 0.72rem;
+      color: var(--text-light);
+    }
+
+    /* =========================================================
+       Editor Section (Split Pane)
+       ========================================================= */
+    .editor-section {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      margin-bottom: 0;
+    }
+
+    .editor-tabs {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      background: var(--admin-surface);
+      border: 1px solid var(--border);
+      border-bottom: none;
+      border-radius: 10px 10px 0 0;
+      overflow: hidden;
+    }
+
+    .editor-tab {
+      font-family: var(--font-body);
+      font-size: 0.78rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-light);
+      padding: 0.75rem 1.25rem;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: default;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .editor-tab.active {
+      color: var(--text);
+    }
+
+    .editor-tab svg {
+      width: 14px;
+      height: 14px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .editor-tab-spacer { flex: 1; }
+
+    .editor-tab-info {
+      font-size: 0.72rem;
+      color: var(--text-light);
+      padding-right: 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .editor-tab-info .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #4ade80;
+      display: inline-block;
+    }
+
+    .editor-panes {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 1px 1fr;
+      border: 1px solid var(--border);
+      border-radius: 0 0 10px 10px;
+      overflow: hidden;
+      min-height: 520px;
+      box-shadow: var(--shadow-md);
+    }
+
+    /* --- Markdown Editor Pane --- */
+    .editor-pane {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      background: var(--admin-editor-bg);
+    }
+
+    .editor-pane-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.5rem 1rem;
+      background: rgba(0, 0, 0, 0.15);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .editor-pane-title {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--admin-editor-line);
+    }
+
+    .editor-pane-lang {
+      font-size: 0.65rem;
+      font-family: var(--font-mono);
+      color: rgba(168, 158, 148, 0.5);
+      background: rgba(255, 255, 255, 0.04);
+      padding: 0.15rem 0.5rem;
+      border-radius: 3px;
+    }
+
+    .editor-textarea-wrapper {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .editor-line-numbers {
+      width: 44px;
+      flex-shrink: 0;
+      background: rgba(0, 0, 0, 0.1);
+      padding: 1rem 0;
+      text-align: right;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      line-height: 1.7;
+      color: var(--admin-editor-gutter);
+      user-select: none;
+      overflow: hidden;
+      border-right: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .editor-line-numbers div {
+      padding-right: 0.75rem;
+    }
+
+    .editor-textarea {
+      flex: 1;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.7;
+      color: var(--admin-editor-text);
+      background: transparent;
+      border: none;
+      outline: none;
+      resize: none;
+      padding: 1rem 1.25rem;
+      tab-size: 2;
+      white-space: pre;
+      overflow-y: auto;
+      overflow-x: auto;
+    }
+
+    .editor-textarea::placeholder {
+      color: rgba(168, 158, 148, 0.3);
+    }
+
+    /* Custom scrollbar for editor */
+    .editor-textarea::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    .editor-textarea::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .editor-textarea::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+    }
+    .editor-textarea::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    /* --- Divider --- */
+    .pane-divider {
+      background: var(--border);
+      cursor: col-resize;
+      position: relative;
+      transition: background 0.2s;
+    }
+
+    .pane-divider:hover,
+    .pane-divider.active {
+      background: var(--accent);
+    }
+
+    .pane-divider::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      width: 9px;
+      margin-left: -4px;
+      cursor: col-resize;
+    }
+
+    /* --- Preview Pane --- */
+    .preview-pane {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      background: var(--bg);
+    }
+
+    .preview-pane-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.5rem 1rem;
+      background: var(--admin-surface);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .preview-pane-title {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-light);
+    }
+
+    .preview-pane-badge {
+      font-size: 0.62rem;
+      font-weight: 500;
+      color: var(--accent);
+      background: var(--accent-light);
+      padding: 0.15rem 0.5rem;
+      border-radius: 3px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .preview-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 2rem 2.25rem;
+    }
+
+    /* Preview content mirrors the reader typography */
+    .preview-content h1 {
+      font-family: var(--font-display);
+      font-size: 2rem;
+      font-weight: 800;
+      line-height: 1.2;
+      letter-spacing: -0.025em;
+      margin-bottom: 1rem;
+      color: var(--text);
+      font-variation-settings: 'opsz' 36;
+    }
+
+    .preview-content h2 {
+      font-family: var(--font-display);
+      font-size: 1.45rem;
+      font-weight: 700;
+      line-height: 1.25;
+      letter-spacing: -0.02em;
+      margin-top: 1.75rem;
+      margin-bottom: 0.75rem;
+      color: var(--text);
+      font-variation-settings: 'opsz' 28;
+    }
+
+    .preview-content h3 {
+      font-family: var(--font-display);
+      font-size: 1.15rem;
+      font-weight: 700;
+      line-height: 1.3;
+      margin-top: 1.5rem;
+      margin-bottom: 0.6rem;
+      color: var(--text);
+    }
+
+    .preview-content p {
+      font-family: var(--font-body);
+      font-size: 0.95rem;
+      line-height: 1.75;
+      color: var(--text-muted);
+      margin-bottom: 1rem;
+    }
+
+    .preview-content strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .preview-content em {
+      font-style: italic;
+    }
+
+    .preview-content code {
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      background: rgba(27, 107, 82, 0.08);
+      color: var(--accent);
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+    }
+
+    .preview-content pre {
+      background: var(--admin-editor-bg);
+      border-radius: 8px;
+      padding: 1.25rem 1.5rem;
+      overflow-x: auto;
+      margin-bottom: 1rem;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .preview-content pre code {
+      background: none;
+      color: var(--admin-editor-text);
+      padding: 0;
+      font-size: 0.8rem;
+      line-height: 1.7;
+    }
+
+    .preview-content ul {
+      padding-left: 1.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .preview-content ul li {
+      font-family: var(--font-body);
+      font-size: 0.95rem;
+      line-height: 1.75;
+      color: var(--text-muted);
+      margin-bottom: 0.3rem;
+    }
+
+    .preview-content ul li::marker {
+      color: var(--accent);
+    }
+
+    .preview-content img {
+      max-width: 100%;
+      border-radius: 8px;
+      margin: 0.5rem 0 1rem;
+      border: 1px solid var(--border);
+    }
+
+    /* Custom scrollbar for preview */
+    .preview-content::-webkit-scrollbar {
+      width: 8px;
+    }
+    .preview-content::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .preview-content::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 4px;
+    }
+
+    /* =========================================================
+       Bottom Action Bar
+       ========================================================= */
+    .action-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1rem 1.5rem 1.5rem;
+      max-width: 1400px;
+      width: 100%;
+      margin: 0 auto;
+      animation: fadeUp 0.4s ease 0.35s both;
+    }
+
+    .action-bar-left {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .action-bar-right {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .btn {
+      font-family: var(--font-body);
+      font-size: 0.85rem;
+      font-weight: 600;
+      padding: 0.6rem 1.5rem;
+      border-radius: 6px;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .btn svg {
+      width: 15px;
+      height: 15px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+      box-shadow: 0 2px 8px rgba(27, 107, 82, 0.25);
+    }
+
+    .btn-primary:hover {
+      background: var(--accent-hover);
+      box-shadow: 0 4px 14px rgba(27, 107, 82, 0.35);
+      transform: translateY(-1px);
+    }
+
+    .btn-secondary {
+      background: var(--admin-surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .btn-secondary:hover {
+      background: var(--bg-card);
+      border-color: var(--admin-input-border);
+    }
+
+    .btn-danger {
+      background: transparent;
+      color: var(--terracotta);
+      border: 1px solid transparent;
+    }
+
+    .btn-danger:hover {
+      background: var(--terracotta-light);
+      border-color: rgba(196, 89, 58, 0.15);
+    }
+
+    .action-bar-meta {
+      font-size: 0.75rem;
+      color: var(--text-light);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .action-bar-meta .save-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #4ade80;
+    }
+
+    /* =========================================================
+       Responsive
+       ========================================================= */
+    @media (max-width: 900px) {
+      .page-content {
+        padding: 1rem;
+      }
+
+      .metadata {
+        padding: 1.25rem 1.25rem;
+      }
+
+      .metadata-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .editor-panes {
+        grid-template-columns: 1fr;
+        min-height: auto;
+      }
+
+      .pane-divider {
+        height: 1px;
+        cursor: row-resize;
+      }
+
+      .pane-divider::after {
+        width: 100%;
+        height: 9px;
+        margin-left: 0;
+        margin-top: -4px;
+      }
+
+      .editor-pane { min-height: 350px; }
+      .preview-pane { min-height: 350px; }
+
+      .editor-line-numbers { width: 36px; }
+
+      .action-bar {
+        flex-direction: column;
+        gap: 1rem;
+        align-items: stretch;
+      }
+
+      .action-bar-left,
+      .action-bar-right {
+        justify-content: center;
+      }
+
+      .field-title input {
+        font-size: 1.2rem;
+      }
+    }
+
+    @media (max-width: 600px) {
+      .topbar-label { display: none; }
+      .editor-tab-info { display: none; }
+
+      .preview-content {
+        padding: 1.25rem;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ===== Top Bar ===== -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <a href="/" class="topbar-logo">edge<span>/</span>cms</a>
+      <div class="topbar-divider"></div>
+      <span class="topbar-label">Admin</span>
+    </div>
+    <div class="topbar-right">
+      <a href="/admin" class="topbar-link">
+        <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>
+        Dashboard
+      </a>
+      <button class="btn-logout" type="button">Log out</button>
+    </div>
+  </header>
+
+  <!-- ===== Page Content ===== -->
+  <div class="page-content">
+
+    <!-- ===== Metadata Section ===== -->
+    <section class="metadata">
+      <div class="metadata-grid">
+
+        <!-- Title -->
+        <div class="field field-full field-title">
+          <label for="post-title">Title</label>
+          <input type="text" id="post-title" placeholder="Post title..." value="Why Edge Computing Changes Everything About Content Delivery">
+        </div>
+
+        <!-- Slug -->
+        <div class="field field-slug">
+          <label for="post-slug">Slug</label>
+          <div style="position: relative;">
+            <span class="slug-prefix">/post/</span>
+            <input type="text" id="post-slug" value="why-edge-computing-changes-everything-about-content-delivery">
+          </div>
+        </div>
+
+        <!-- Status -->
+        <div class="field">
+          <label for="post-status">Status</label>
+          <select id="post-status">
+            <option value="draft" selected>Draft</option>
+            <option value="published">Published</option>
+          </select>
+        </div>
+
+        <!-- Tags -->
+        <div class="field field-full">
+          <label>Tags</label>
+          <div class="tags-input-wrapper" id="tags-wrapper">
+            <span class="tag-pill">edge compute <span class="tag-pill-remove" data-tag="edge compute">&times;</span></span>
+            <span class="tag-pill">fastly <span class="tag-pill-remove" data-tag="fastly">&times;</span></span>
+            <span class="tag-pill">architecture <span class="tag-pill-remove" data-tag="architecture">&times;</span></span>
+            <input type="text" class="tags-input" id="tags-input" placeholder="Add a tag and press Enter...">
+          </div>
+        </div>
+
+        <!-- Excerpt -->
+        <div class="field field-full">
+          <label for="post-excerpt">Excerpt</label>
+          <textarea id="post-excerpt" rows="2" placeholder="A short summary for listing pages...">Traditional CDNs cache your content at the edge but still depend on an origin server for dynamic logic. What if the logic itself ran at the edge — no origin, no round-trips, no cold starts?</textarea>
+        </div>
+
+        <!-- Featured Image -->
+        <div class="field field-full">
+          <label>Featured Image</label>
+          <div class="image-upload-zone" id="image-upload">
+            <svg class="image-upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+              <circle cx="8.5" cy="8.5" r="1.5"/>
+              <polyline points="21 15 16 10 5 21"/>
+            </svg>
+            <div class="image-upload-text">
+              <strong>Click to upload</strong> or drag and drop
+            </div>
+            <div class="image-upload-hint">PNG, JPG, or WebP up to 5MB. Images are optimized on the fly via Fastly Image Optimizer.</div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ===== Editor Section ===== -->
+    <section class="editor-section">
+
+      <div class="editor-tabs">
+        <div class="editor-tab active">
+          <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          Editor
+        </div>
+        <div class="editor-tab-spacer"></div>
+        <div class="editor-tab-info">
+          <span class="dot"></span>
+          Auto-saved
+        </div>
+      </div>
+
+      <div class="editor-panes">
+
+        <!-- Markdown Editor -->
+        <div class="editor-pane">
+          <div class="editor-pane-header">
+            <span class="editor-pane-title">Markdown</span>
+            <span class="editor-pane-lang">CommonMark</span>
+          </div>
+          <div class="editor-textarea-wrapper">
+            <div class="editor-line-numbers" id="line-numbers" aria-hidden="true"></div>
+            <textarea class="editor-textarea" id="markdown-editor" spellcheck="false" placeholder="Start writing in Markdown...">
+# Why Edge Computing Changes Everything
+
+The traditional web architecture is simple: a browser makes a request, it hits a CDN for cached static assets, and everything else goes back to an **origin server** in a single datacenter. That model worked for twenty years. It's breaking now.
+
+## The Origin Problem
+
+Every request that misses the CDN cache travels hundreds — sometimes thousands — of miles to reach your origin. That round-trip adds latency that no amount of frontend optimization can fix.
+
+Consider what happens when a user in Tokyo hits a blog hosted in `us-east-1`:
+
+- DNS resolution: ~20ms
+- TCP handshake to origin: ~150ms
+- TLS negotiation: ~100ms
+- Application processing: ~50ms
+- Response transit: ~150ms
+
+That's **470ms** before the first byte reaches the browser. And that's the *good* case, assuming the origin is healthy and not under load.
+
+## Moving Logic to the Edge
+
+Edge computing flips this model. Instead of running application logic in a single datacenter, you run it at the **point of presence** closest to the user. Fastly's network has over 80 POPs worldwide — your code executes in the one nearest to each request.
+
+```rust
+use fastly::{Request, Response};
+
+#[fastly::main]
+fn main(req: Request) -> Result<Response, fastly::Error> {
+    // This code runs at the nearest POP
+    // No origin round-trip required
+    let page = render_from_kv_store(&req)?;
+    Ok(Response::from_body(page)
+        .with_content_type(mime::TEXT_HTML))
+}
+```
+
+### What This Means in Practice
+
+The benefits compound in ways that aren't obvious at first:
+
+- **Latency drops to single-digit milliseconds** — your code runs 10-50ms from every user on Earth
+- **No cold starts** — unlike serverless functions, Compute apps are pre-initialized at the edge
+- **Global by default** — deploy once, serve from 80+ locations automatically
+- **Origin elimination** — for read-heavy workloads, you can remove the origin entirely
+
+![Edge computing architecture diagram](/images/edge-architecture.png)
+
+## The KV Store Pattern
+
+With Fastly KV Store, your content lives at the edge alongside your logic. No database round-trips, no origin fetches. A blog post stored in KV Store is available at every POP with single-digit millisecond reads.
+
+This is how edge/cms works — every post, every template, every configuration value lives in KV Store. The entire CMS runs without an origin server.</textarea>
+          </div>
+        </div>
+
+        <!-- Divider -->
+        <div class="pane-divider" id="pane-divider"></div>
+
+        <!-- Preview Pane -->
+        <div class="preview-pane">
+          <div class="preview-pane-header">
+            <span class="preview-pane-title">Preview</span>
+            <span class="preview-pane-badge">Reader View</span>
+          </div>
+          <div class="preview-content" id="preview-content">
+            <!-- Filled by JS -->
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </div>
+
+  <!-- ===== Action Bar ===== -->
+  <div class="action-bar">
+    <div class="action-bar-left">
+      <button class="btn btn-primary" type="button">
+        <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+        Save Draft
+      </button>
+      <button class="btn btn-secondary" type="button">
+        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+        Publish
+      </button>
+      <div class="action-bar-meta">
+        <span class="save-dot"></span>
+        Last saved 2 minutes ago
+      </div>
+    </div>
+    <div class="action-bar-right">
+      <button class="btn btn-danger" type="button">
+        <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+        Delete
+      </button>
+    </div>
+  </div>
+
+  <!-- ===== JavaScript ===== -->
+  <script>
+    // -------------------------------------------------------
+    // 1. Slug auto-generation from title
+    // -------------------------------------------------------
+    const titleInput = document.getElementById('post-title');
+    const slugInput = document.getElementById('post-slug');
+    let slugManuallyEdited = false;
+
+    slugInput.addEventListener('input', () => { slugManuallyEdited = true; });
+
+    titleInput.addEventListener('keyup', () => {
+      if (slugManuallyEdited) return;
+      const slug = titleInput.value
+        .toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, '')
+        .replace(/\s+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+      slugInput.value = slug;
+    });
+
+    // -------------------------------------------------------
+    // 2. Tag input — Enter to add, click X to remove
+    // -------------------------------------------------------
+    const tagsWrapper = document.getElementById('tags-wrapper');
+    const tagsInput = document.getElementById('tags-input');
+
+    function addTag(text) {
+      text = text.trim().toLowerCase();
+      if (!text) return;
+      // Prevent duplicates
+      const existing = tagsWrapper.querySelectorAll('.tag-pill');
+      for (const pill of existing) {
+        if (pill.textContent.replace('×', '').trim().toLowerCase() === text) return;
+      }
+      const pill = document.createElement('span');
+      pill.className = 'tag-pill';
+      pill.innerHTML = `${text} <span class="tag-pill-remove" data-tag="${text}">&times;</span>`;
+      tagsWrapper.insertBefore(pill, tagsInput);
+    }
+
+    function removeTag(el) {
+      el.closest('.tag-pill').remove();
+    }
+
+    tagsInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        addTag(tagsInput.value);
+        tagsInput.value = '';
+      }
+      // Backspace on empty input removes last tag
+      if (e.key === 'Backspace' && tagsInput.value === '') {
+        const pills = tagsWrapper.querySelectorAll('.tag-pill');
+        if (pills.length) pills[pills.length - 1].remove();
+      }
+    });
+
+    tagsWrapper.addEventListener('click', (e) => {
+      if (e.target.classList.contains('tag-pill-remove')) {
+        removeTag(e.target);
+      } else {
+        tagsInput.focus();
+      }
+    });
+
+    // -------------------------------------------------------
+    // 3. Image upload zone — drag & drop visual states
+    // -------------------------------------------------------
+    const imageZone = document.getElementById('image-upload');
+
+    imageZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      imageZone.classList.add('dragover');
+    });
+
+    imageZone.addEventListener('dragleave', () => {
+      imageZone.classList.remove('dragover');
+    });
+
+    imageZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      imageZone.classList.remove('dragover');
+      // Mockup: show filename
+      const file = e.dataTransfer.files[0];
+      if (file) {
+        imageZone.innerHTML = `
+          <svg class="image-upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color: var(--accent);">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+          <div class="image-upload-text"><strong>${file.name}</strong></div>
+          <div class="image-upload-hint">${(file.size / 1024).toFixed(0)} KB &mdash; Click to replace</div>
+        `;
+      }
+    });
+
+    imageZone.addEventListener('click', () => {
+      // In a real app, this would open a file picker
+    });
+
+    // -------------------------------------------------------
+    // 4. Markdown-to-HTML live preview
+    // -------------------------------------------------------
+    const editor = document.getElementById('markdown-editor');
+    const preview = document.getElementById('preview-content');
+
+    function markdownToHtml(md) {
+      let html = md;
+
+      // Fenced code blocks (``` ... ```)
+      html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+        const escaped = code
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+        return `<pre><code>${escaped.trimEnd()}</code></pre>`;
+      });
+
+      // Inline code (must come after fenced blocks)
+      html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+      // Images ![alt](src)
+      html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g,
+        '<img src="$2" alt="$1">');
+
+      // Links [text](url) — only those not preceded by !
+      html = html.replace(/(?<!!)\[([^\]]+)\]\(([^)]+)\)/g,
+        '<a href="$2" style="color: var(--accent); text-decoration: underline;">$1</a>');
+
+      // Process line by line for block elements
+      const lines = html.split('\n');
+      let result = [];
+      let inList = false;
+
+      for (let i = 0; i < lines.length; i++) {
+        let line = lines[i];
+
+        // Skip lines inside <pre> blocks
+        if (line.includes('<pre>')) {
+          // Find the closing </pre> and pass through
+          let preBlock = line;
+          while (i < lines.length - 1 && !lines[i].includes('</pre>')) {
+            i++;
+            preBlock += '\n' + lines[i];
+          }
+          result.push(preBlock);
+          continue;
+        }
+
+        // Headings
+        if (line.match(/^### /)) {
+          if (inList) { result.push('</ul>'); inList = false; }
+          result.push(`<h3>${line.replace(/^### /, '')}</h3>`);
+          continue;
+        }
+        if (line.match(/^## /)) {
+          if (inList) { result.push('</ul>'); inList = false; }
+          result.push(`<h2>${line.replace(/^## /, '')}</h2>`);
+          continue;
+        }
+        if (line.match(/^# /)) {
+          if (inList) { result.push('</ul>'); inList = false; }
+          result.push(`<h1>${line.replace(/^# /, '')}</h1>`);
+          continue;
+        }
+
+        // List items
+        if (line.match(/^- /)) {
+          if (!inList) { result.push('<ul>'); inList = true; }
+          result.push(`<li>${applyInline(line.replace(/^- /, ''))}</li>`);
+          continue;
+        } else if (inList) {
+          result.push('</ul>');
+          inList = false;
+        }
+
+        // Empty line
+        if (line.trim() === '') {
+          continue;
+        }
+
+        // Paragraph
+        result.push(`<p>${applyInline(line)}</p>`);
+      }
+
+      if (inList) result.push('</ul>');
+      return result.join('\n');
+    }
+
+    function applyInline(text) {
+      // Bold
+      text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      // Italic
+      text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+      return text;
+    }
+
+    function updatePreview() {
+      preview.innerHTML = markdownToHtml(editor.value);
+    }
+
+    editor.addEventListener('input', updatePreview);
+
+    // -------------------------------------------------------
+    // 5. Line numbers
+    // -------------------------------------------------------
+    const lineNumbers = document.getElementById('line-numbers');
+
+    function updateLineNumbers() {
+      const lines = editor.value.split('\n').length;
+      let html = '';
+      for (let i = 1; i <= lines; i++) {
+        html += `<div>${i}</div>`;
+      }
+      lineNumbers.innerHTML = html;
+    }
+
+    // Sync scroll between line numbers and editor
+    editor.addEventListener('scroll', () => {
+      lineNumbers.style.transform = `translateY(-${editor.scrollTop}px)`;
+    });
+
+    editor.addEventListener('input', updateLineNumbers);
+
+    // -------------------------------------------------------
+    // 6. Pane divider drag (resize)
+    // -------------------------------------------------------
+    const divider = document.getElementById('pane-divider');
+    const panes = document.querySelector('.editor-panes');
+
+    let isDragging = false;
+
+    divider.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      divider.classList.add('active');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      const rect = panes.getBoundingClientRect();
+      const offset = e.clientX - rect.left;
+      const pct = (offset / rect.width) * 100;
+      if (pct > 20 && pct < 80) {
+        panes.style.gridTemplateColumns = `${pct}% 1px ${100 - pct}%`;
+      }
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (isDragging) {
+        isDragging = false;
+        divider.classList.remove('active');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    });
+
+    // -------------------------------------------------------
+    // Initial render
+    // -------------------------------------------------------
+    updatePreview();
+    updateLineNumbers();
+  </script>
+
+</body>
+</html>

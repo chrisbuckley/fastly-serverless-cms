@@ -1,0 +1,1206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Edge CMS — Admin Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,600;0,9..144,700;0,9..144,800;1,9..144,400&family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #f0ede8;
+      --bg-card: #fffdf9;
+      --bg-dark: #2a2520;
+      --text: #2a2520;
+      --text-muted: #7a7068;
+      --text-light: #a89e94;
+      --accent: #1b6b52;
+      --accent-hover: #14503e;
+      --accent-light: #e8f3ef;
+      --terracotta: #c4593a;
+      --terracotta-light: #fdf0ec;
+      --gold: #b8a47e;
+      --gold-light: #f5f0e5;
+      --border: #e5ddd3;
+      --border-light: #ede7de;
+      --shadow: rgba(42, 37, 32, 0.06);
+      --shadow-md: rgba(42, 37, 32, 0.1);
+      --font-display: 'Fraunces', serif;
+      --font-body: 'DM Sans', sans-serif;
+      --max-width: 1200px;
+      --topbar-height: 56px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html {
+      font-size: 16px;
+      scroll-behavior: smooth;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    body {
+      font-family: var(--font-body);
+      color: var(--text);
+      background: var(--bg);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    /* --- Noise texture overlay (matches reader) --- */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      opacity: 0.025;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 9999;
+    }
+
+    /* --- Top bar --- */
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: var(--bg-dark);
+      height: var(--topbar-height);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 2rem;
+      animation: fadeDown 0.4s ease both;
+    }
+
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+    }
+
+    .topbar-logo {
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 1.25rem;
+      color: #fff;
+      text-decoration: none;
+      letter-spacing: -0.02em;
+      font-variation-settings: 'opsz' 36;
+    }
+
+    .topbar-logo span { color: var(--accent); }
+
+    .topbar-divider {
+      width: 1px;
+      height: 20px;
+      background: rgba(255, 255, 255, 0.15);
+    }
+
+    .topbar-label {
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: rgba(255, 255, 255, 0.5);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .topbar-link {
+      font-size: 0.82rem;
+      font-weight: 500;
+      color: rgba(255, 255, 255, 0.6);
+      text-decoration: none;
+      transition: color 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .topbar-link:hover { color: #fff; }
+
+    .topbar-link svg {
+      width: 14px;
+      height: 14px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .topbar-logout {
+      font-family: var(--font-body);
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: rgba(255, 255, 255, 0.6);
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 6px;
+      padding: 0.35rem 0.9rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .topbar-logout:hover {
+      background: rgba(255, 255, 255, 0.15);
+      color: #fff;
+    }
+
+    /* --- Main container --- */
+    .admin-main {
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 2rem 2rem 4rem;
+      animation: fadeUp 0.5s ease both;
+    }
+
+    /* --- Stats strip --- */
+    .stats-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-light);
+      border-radius: 8px;
+      padding: 1.25rem 1.5rem;
+      animation: fadeUp 0.5s ease both;
+    }
+
+    .stat-card:nth-child(1) { animation-delay: 0.05s; }
+    .stat-card:nth-child(2) { animation-delay: 0.1s; }
+    .stat-card:nth-child(3) { animation-delay: 0.15s; }
+    .stat-card:nth-child(4) { animation-delay: 0.2s; }
+
+    .stat-card-value {
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 2rem;
+      color: var(--text);
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+      font-variation-settings: 'opsz' 36;
+    }
+
+    .stat-card-label {
+      font-size: 0.78rem;
+      font-weight: 500;
+      color: var(--text-light);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-top: 0.25rem;
+    }
+
+    .stat-card-icon {
+      float: right;
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .stat-card-icon svg {
+      width: 18px;
+      height: 18px;
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .stat-icon-total {
+      background: var(--accent-light);
+    }
+
+    .stat-icon-total svg { stroke: var(--accent); }
+
+    .stat-icon-published {
+      background: #e8f3ef;
+    }
+
+    .stat-icon-published svg { stroke: #1b6b52; }
+
+    .stat-icon-drafts {
+      background: var(--gold-light);
+    }
+
+    .stat-icon-drafts svg { stroke: #8a7650; }
+
+    .stat-icon-images {
+      background: var(--terracotta-light);
+    }
+
+    .stat-icon-images svg { stroke: var(--terracotta); }
+
+    /* --- Action bar --- */
+    .action-bar {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+      flex-wrap: wrap;
+      animation: fadeUp 0.5s ease 0.2s both;
+    }
+
+    .btn-new-post {
+      font-family: var(--font-body);
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: #fff;
+      background: var(--accent);
+      border: none;
+      border-radius: 8px;
+      padding: 0.65rem 1.5rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      text-decoration: none;
+      box-shadow: 0 2px 8px rgba(27, 107, 82, 0.25);
+    }
+
+    .btn-new-post:hover {
+      background: var(--accent-hover);
+      box-shadow: 0 4px 14px rgba(27, 107, 82, 0.35);
+      transform: translateY(-1px);
+    }
+
+    .btn-new-post svg {
+      width: 16px;
+      height: 16px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .search-input {
+      flex: 1;
+      min-width: 200px;
+      font-family: var(--font-body);
+      font-size: 0.88rem;
+      color: var(--text);
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.6rem 1rem 0.6rem 2.5rem;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a89e94' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cpath d='m21 21-4.3-4.3'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: 0.75rem center;
+    }
+
+    .search-input::placeholder { color: var(--text-light); }
+
+    .search-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(27, 107, 82, 0.08);
+    }
+
+    .filter-select {
+      font-family: var(--font-body);
+      font-size: 0.85rem;
+      color: var(--text);
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.6rem 2.2rem 0.6rem 1rem;
+      outline: none;
+      cursor: pointer;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a89e94' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: calc(100% - 0.7rem) center;
+      transition: border-color 0.2s;
+    }
+
+    .filter-select:focus {
+      border-color: var(--accent);
+    }
+
+    /* --- Posts table --- */
+    .posts-table-wrapper {
+      background: var(--bg-card);
+      border: 1px solid var(--border-light);
+      border-radius: 8px;
+      overflow: hidden;
+      animation: fadeUp 0.5s ease 0.25s both;
+    }
+
+    .posts-table-scroll {
+      overflow-x: auto;
+    }
+
+    .posts-table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 680px;
+    }
+
+    .posts-table thead {
+      background: rgba(42, 37, 32, 0.03);
+    }
+
+    .posts-table th {
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      padding: 0.85rem 1.25rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+      user-select: none;
+    }
+
+    .posts-table th.sortable {
+      cursor: pointer;
+      transition: color 0.2s;
+    }
+
+    .posts-table th.sortable:hover {
+      color: var(--accent);
+    }
+
+    .posts-table th .sort-icon {
+      display: inline-block;
+      margin-left: 0.3rem;
+      opacity: 0.4;
+      font-size: 0.65rem;
+      vertical-align: middle;
+      transition: opacity 0.2s;
+    }
+
+    .posts-table th.sort-active .sort-icon {
+      opacity: 1;
+      color: var(--accent);
+    }
+
+    .posts-table td {
+      padding: 0.9rem 1.25rem;
+      font-size: 0.9rem;
+      border-bottom: 1px solid var(--border-light);
+      vertical-align: middle;
+    }
+
+    .posts-table tbody tr {
+      transition: background 0.15s;
+    }
+
+    .posts-table tbody tr:nth-child(even) {
+      background: rgba(42, 37, 32, 0.015);
+    }
+
+    .posts-table tbody tr:hover {
+      background: rgba(27, 107, 82, 0.04);
+    }
+
+    .posts-table tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    /* Post title in table */
+    .post-title-cell {
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .post-title-cell a {
+      color: inherit;
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    .post-title-cell a:hover {
+      color: var(--accent);
+    }
+
+    /* Status badges */
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 0.2rem 0.7rem;
+      border-radius: 100px;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+
+    .status-published {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .status-draft {
+      background: var(--gold);
+      color: var(--text);
+    }
+
+    /* Date column */
+    .date-cell {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      white-space: nowrap;
+    }
+
+    /* Tags in table */
+    .table-tags {
+      display: flex;
+      gap: 0.35rem;
+      flex-wrap: wrap;
+    }
+
+    .table-tag {
+      font-size: 0.68rem;
+      font-weight: 500;
+      padding: 0.15rem 0.55rem;
+      border-radius: 100px;
+      background: var(--border-light);
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    /* Action icons */
+    .action-icons {
+      display: flex;
+      gap: 0.25rem;
+    }
+
+    .action-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      transition: all 0.2s;
+      color: var(--text-light);
+    }
+
+    .action-btn svg {
+      width: 15px;
+      height: 15px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .action-btn-edit:hover {
+      background: var(--accent-light);
+      color: var(--accent);
+    }
+
+    .action-btn-delete:hover {
+      background: var(--terracotta-light);
+      color: var(--terracotta);
+    }
+
+    /* --- Sidebar management section --- */
+    .bottom-section {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      margin-top: 1.5rem;
+      animation: fadeUp 0.5s ease 0.3s both;
+    }
+
+    .sidebar-manager {
+      background: var(--bg-card);
+      border: 1px solid var(--border-light);
+      border-radius: 8px;
+      padding: 1.5rem;
+    }
+
+    .sidebar-manager-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1.25rem;
+    }
+
+    .sidebar-manager-title {
+      font-family: var(--font-display);
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--text);
+      font-variation-settings: 'opsz' 20;
+    }
+
+    .btn-manage-sidebar {
+      font-family: var(--font-body);
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--accent);
+      background: var(--accent-light);
+      border: none;
+      border-radius: 6px;
+      padding: 0.4rem 0.9rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    .btn-manage-sidebar svg {
+      width: 13px;
+      height: 13px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .btn-manage-sidebar:hover {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .sidebar-preview {
+      list-style: none;
+      padding: 0;
+    }
+
+    .sidebar-preview-item {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      padding: 0.55rem 0;
+      border-bottom: 1px solid var(--border-light);
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .sidebar-preview-item:last-child { border-bottom: none; }
+
+    .sidebar-preview-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .sidebar-preview-icon svg {
+      width: 14px;
+      height: 14px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .sidebar-preview-icon-cat {
+      background: var(--accent-light);
+      color: var(--accent);
+    }
+
+    .sidebar-preview-icon-link {
+      background: var(--gold-light);
+      color: #8a7650;
+    }
+
+    .sidebar-preview-label {
+      font-weight: 500;
+      color: var(--text);
+    }
+
+    .sidebar-preview-detail {
+      font-size: 0.75rem;
+      color: var(--text-light);
+      margin-left: auto;
+      white-space: nowrap;
+    }
+
+    /* Edge info card */
+    .edge-info-card {
+      background: linear-gradient(135deg, var(--bg-dark) 0%, #3a342e 100%);
+      border-radius: 8px;
+      padding: 1.5rem;
+      color: rgba(255, 255, 255, 0.85);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .edge-info-card-title {
+      font-family: var(--font-display);
+      font-size: 1rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 0.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-variation-settings: 'opsz' 20;
+    }
+
+    .edge-info-card-title svg {
+      width: 16px;
+      height: 16px;
+      fill: none;
+      stroke: var(--accent);
+      stroke-width: 2;
+    }
+
+    .edge-info-card p {
+      font-size: 0.82rem;
+      line-height: 1.6;
+      color: rgba(255, 255, 255, 0.6);
+      margin-bottom: 1.25rem;
+    }
+
+    .edge-info-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.75rem;
+    }
+
+    .edge-info-stat {
+      text-align: center;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 6px;
+      padding: 0.65rem 0.5rem;
+    }
+
+    .edge-info-stat-value {
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 1.1rem;
+      color: #fff;
+    }
+
+    .edge-info-stat-label {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: rgba(255, 255, 255, 0.45);
+      margin-top: 0.1rem;
+    }
+
+    /* --- Empty state (hidden by default, shown via JS) --- */
+    .empty-state {
+      display: none;
+      text-align: center;
+      padding: 4rem 2rem;
+    }
+
+    .empty-state-icon {
+      font-size: 3rem;
+      margin-bottom: 1rem;
+      opacity: 0.3;
+    }
+
+    .empty-state-title {
+      font-family: var(--font-display);
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 0.5rem;
+      font-variation-settings: 'opsz' 24;
+    }
+
+    .empty-state-text {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      max-width: 360px;
+      margin: 0 auto;
+    }
+
+    /* --- Table row count --- */
+    .table-footer {
+      padding: 0.75rem 1.25rem;
+      border-top: 1px solid var(--border-light);
+      font-size: 0.78rem;
+      color: var(--text-light);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    /* --- Animations --- */
+    @keyframes fadeUp {
+      from {
+        opacity: 0;
+        transform: translateY(16px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes fadeDown {
+      from {
+        opacity: 0;
+        transform: translateY(-8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    /* --- Responsive --- */
+    @media (max-width: 900px) {
+      .stats-strip {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .bottom-section {
+        grid-template-columns: 1fr;
+      }
+
+      .admin-main {
+        padding: 1.5rem 1.25rem 3rem;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .stats-strip {
+        grid-template-columns: 1fr 1fr;
+        gap: 0.75rem;
+      }
+
+      .stat-card {
+        padding: 1rem 1.25rem;
+      }
+
+      .stat-card-value {
+        font-size: 1.6rem;
+      }
+
+      .stat-card-icon {
+        width: 30px;
+        height: 30px;
+      }
+
+      .stat-card-icon svg {
+        width: 14px;
+        height: 14px;
+      }
+
+      .action-bar {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .btn-new-post {
+        justify-content: center;
+      }
+
+      .search-input {
+        min-width: unset;
+      }
+
+      .topbar {
+        padding: 0 1rem;
+      }
+
+      .topbar-label { display: none; }
+      .topbar-divider { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <a href="/admin" class="topbar-logo">edge<span>/</span>cms</a>
+      <div class="topbar-divider"></div>
+      <span class="topbar-label">Admin Dashboard</span>
+    </div>
+    <div class="topbar-right">
+      <a href="/" class="topbar-link" target="_blank">
+        <svg viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+        View Blog
+      </a>
+      <button class="topbar-logout" onclick="window.location.href='/admin/logout'">Logout</button>
+    </div>
+  </header>
+
+  <!-- Main content -->
+  <main class="admin-main">
+
+    <!-- Quick stats -->
+    <section class="stats-strip">
+      <div class="stat-card">
+        <div class="stat-card-icon stat-icon-total">
+          <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        </div>
+        <div class="stat-card-value" id="stat-total">8</div>
+        <div class="stat-card-label">Total Posts</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-icon stat-icon-published">
+          <svg viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        </div>
+        <div class="stat-card-value" id="stat-published">6</div>
+        <div class="stat-card-label">Published</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-icon stat-icon-drafts">
+          <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </div>
+        <div class="stat-card-value" id="stat-drafts">2</div>
+        <div class="stat-card-label">Drafts</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-icon stat-icon-images">
+          <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+        </div>
+        <div class="stat-card-value">14</div>
+        <div class="stat-card-label">Total Images</div>
+      </div>
+    </section>
+
+    <!-- Action bar -->
+    <div class="action-bar">
+      <a href="/admin/posts/new" class="btn-new-post">
+        <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        New Post
+      </a>
+      <input type="text" class="search-input" id="search-input" placeholder="Search posts...">
+      <select class="filter-select" id="status-filter">
+        <option value="all">All Posts</option>
+        <option value="published">Published</option>
+        <option value="draft">Draft</option>
+      </select>
+    </div>
+
+    <!-- Posts table -->
+    <div class="posts-table-wrapper">
+      <div class="posts-table-scroll">
+        <table class="posts-table" id="posts-table">
+          <thead>
+            <tr>
+              <th class="sortable" data-sort="title">Title <span class="sort-icon">&#9650;&#9660;</span></th>
+              <th>Status</th>
+              <th class="sortable sort-active" data-sort="date">Date <span class="sort-icon">&#9660;</span></th>
+              <th>Tags</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="posts-tbody">
+            <!-- Rows injected by JS -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Empty state -->
+      <div class="empty-state" id="empty-state">
+        <div class="empty-state-icon">
+          <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+        </div>
+        <div class="empty-state-title">No posts found</div>
+        <div class="empty-state-text">No posts match your current filter. Try adjusting your search or filter criteria.</div>
+      </div>
+
+      <div class="table-footer" id="table-footer">
+        <span id="row-count">Showing 8 posts</span>
+      </div>
+    </div>
+
+    <!-- Bottom section: sidebar manager + edge info -->
+    <section class="bottom-section">
+
+      <!-- Sidebar manager -->
+      <div class="sidebar-manager">
+        <div class="sidebar-manager-header">
+          <h2 class="sidebar-manager-title">Sidebar Structure</h2>
+          <a href="/admin/sidebar" class="btn-manage-sidebar">
+            <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            Manage
+          </a>
+        </div>
+        <ul class="sidebar-preview">
+          <li class="sidebar-preview-item">
+            <div class="sidebar-preview-icon sidebar-preview-icon-cat">
+              <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            </div>
+            <span class="sidebar-preview-label">Getting Started</span>
+            <span class="sidebar-preview-detail">2 posts</span>
+          </li>
+          <li class="sidebar-preview-item">
+            <div class="sidebar-preview-icon sidebar-preview-icon-cat">
+              <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            </div>
+            <span class="sidebar-preview-label">Caching &amp; Performance</span>
+            <span class="sidebar-preview-detail">3 posts</span>
+          </li>
+          <li class="sidebar-preview-item">
+            <div class="sidebar-preview-icon sidebar-preview-icon-cat">
+              <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            </div>
+            <span class="sidebar-preview-label">Security</span>
+            <span class="sidebar-preview-detail">2 posts</span>
+          </li>
+          <li class="sidebar-preview-item">
+            <div class="sidebar-preview-icon sidebar-preview-icon-link">
+              <svg viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            </div>
+            <span class="sidebar-preview-label">GitHub Repository</span>
+            <span class="sidebar-preview-detail">external link</span>
+          </li>
+          <li class="sidebar-preview-item">
+            <div class="sidebar-preview-icon sidebar-preview-icon-link">
+              <svg viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            </div>
+            <span class="sidebar-preview-label">Fastly Docs</span>
+            <span class="sidebar-preview-detail">external link</span>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Edge info card -->
+      <div class="edge-info-card">
+        <div>
+          <div class="edge-info-card-title">
+            <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            Running on Fastly Edge
+          </div>
+          <p>All admin operations execute at the edge. Post content stored in KV Store, images in Object Store. Cache purge triggers automatically on every write.</p>
+        </div>
+        <div class="edge-info-stats">
+          <div class="edge-info-stat">
+            <div class="edge-info-stat-value">KV</div>
+            <div class="edge-info-stat-label">Storage</div>
+          </div>
+          <div class="edge-info-stat">
+            <div class="edge-info-stat-value">EWR</div>
+            <div class="edge-info-stat-label">POP</div>
+          </div>
+          <div class="edge-info-stat">
+            <div class="edge-info-stat-value">18ms</div>
+            <div class="edge-info-stat-label">Latency</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    // --- Sample post data ---
+    const posts = [
+      {
+        slug: 'building-a-cms-at-the-edge',
+        title: 'Building a CMS That Runs Entirely at the Edge',
+        status: 'published',
+        date: '2026-05-18',
+        tags: ['fastly', 'edge compute', 'architecture']
+      },
+      {
+        slug: 'kv-store-patterns',
+        title: 'KV Store Patterns for Content-Heavy Applications',
+        status: 'published',
+        date: '2026-05-15',
+        tags: ['kv store', 'data model']
+      },
+      {
+        slug: 'surrogate-keys-explained',
+        title: 'Surrogate Keys: Surgical Cache Invalidation at Scale',
+        status: 'published',
+        date: '2026-05-10',
+        tags: ['caching', 'fastly']
+      },
+      {
+        slug: 'image-optimizer-deep-dive',
+        title: 'Responsive Images Without a Build Step',
+        status: 'published',
+        date: '2026-05-08',
+        tags: ['images', 'performance']
+      },
+      {
+        slug: 'edge-auth-patterns',
+        title: 'Authentication Patterns at the Edge',
+        status: 'published',
+        date: '2026-05-05',
+        tags: ['security', 'auth']
+      },
+      {
+        slug: 'compute-rust-wasm-guide',
+        title: 'Getting Started with Fastly Compute in Rust',
+        status: 'draft',
+        date: '2026-05-19',
+        tags: ['compute', 'rust', 'tutorial']
+      },
+      {
+        slug: 'rate-limiting-login',
+        title: 'Rate Limiting Your Login Endpoint',
+        status: 'published',
+        date: '2026-05-02',
+        tags: ['security', 'rate limiting']
+      },
+      {
+        slug: 'multi-language-compute',
+        title: 'One CMS, Three Languages: Rust, TypeScript, and Go',
+        status: 'draft',
+        date: '2026-05-20',
+        tags: ['compute', 'architecture']
+      }
+    ];
+
+    // --- Sort state ---
+    let sortField = 'date';
+    let sortDir = 'desc';
+
+    // --- Format date ---
+    function formatDate(dateStr) {
+      const d = new Date(dateStr + 'T00:00:00');
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+
+    // --- Render table ---
+    function renderTable() {
+      const search = document.getElementById('search-input').value.toLowerCase();
+      const filter = document.getElementById('status-filter').value;
+      const tbody = document.getElementById('posts-tbody');
+      const emptyState = document.getElementById('empty-state');
+      const tableFooter = document.getElementById('table-footer');
+
+      let filtered = posts.filter(p => {
+        const matchSearch = p.title.toLowerCase().includes(search);
+        const matchFilter = filter === 'all' || p.status === filter;
+        return matchSearch && matchFilter;
+      });
+
+      // Sort
+      filtered.sort((a, b) => {
+        let valA, valB;
+        if (sortField === 'date') {
+          valA = a.date;
+          valB = b.date;
+        } else if (sortField === 'title') {
+          valA = a.title.toLowerCase();
+          valB = b.title.toLowerCase();
+        }
+        if (valA < valB) return sortDir === 'asc' ? -1 : 1;
+        if (valA > valB) return sortDir === 'asc' ? 1 : -1;
+        return 0;
+      });
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = '';
+        emptyState.style.display = 'block';
+        tableFooter.style.display = 'none';
+        return;
+      }
+
+      emptyState.style.display = 'none';
+      tableFooter.style.display = 'flex';
+
+      tbody.innerHTML = filtered.map(p => `
+        <tr data-slug="${p.slug}" data-status="${p.status}">
+          <td class="post-title-cell">
+            <a href="/admin/posts/${p.slug}/edit">${p.title}</a>
+          </td>
+          <td>
+            <span class="status-badge status-${p.status}">
+              ${p.status === 'published' ? 'Published' : 'Draft'}
+            </span>
+          </td>
+          <td class="date-cell">${formatDate(p.date)}</td>
+          <td>
+            <div class="table-tags">
+              ${p.tags.map(t => `<span class="table-tag">${t}</span>`).join('')}
+            </div>
+          </td>
+          <td>
+            <div class="action-icons">
+              <button class="action-btn action-btn-edit" title="Edit post" onclick="window.location.href='/admin/posts/${p.slug}/edit'">
+                <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </button>
+              <button class="action-btn action-btn-delete" title="Delete post" onclick="deletePost('${p.slug}', '${p.title.replace(/'/g, "\\'")}')">
+                <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+              </button>
+            </div>
+          </td>
+        </tr>
+      `).join('');
+
+      document.getElementById('row-count').textContent =
+        `Showing ${filtered.length} of ${posts.length} posts`;
+
+      // Update stats based on full data
+      const published = posts.filter(p => p.status === 'published').length;
+      const drafts = posts.filter(p => p.status === 'draft').length;
+      document.getElementById('stat-total').textContent = posts.length;
+      document.getElementById('stat-published').textContent = published;
+      document.getElementById('stat-drafts').textContent = drafts;
+    }
+
+    // --- Delete handler ---
+    function deletePost(slug, title) {
+      if (window.confirm(`Delete "${title}"?\n\nThis will remove the post and purge it from the edge cache. This action cannot be undone.`)) {
+        const idx = posts.findIndex(p => p.slug === slug);
+        if (idx > -1) {
+          posts.splice(idx, 1);
+          renderTable();
+        }
+      }
+    }
+
+    // --- Search ---
+    document.getElementById('search-input').addEventListener('input', renderTable);
+
+    // --- Filter ---
+    document.getElementById('status-filter').addEventListener('change', renderTable);
+
+    // --- Column sorting ---
+    document.querySelectorAll('.posts-table th.sortable').forEach(th => {
+      th.addEventListener('click', () => {
+        const field = th.dataset.sort;
+        if (sortField === field) {
+          sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+          sortField = field;
+          sortDir = field === 'date' ? 'desc' : 'asc';
+        }
+
+        // Update header visuals
+        document.querySelectorAll('.posts-table th.sortable').forEach(h => {
+          h.classList.remove('sort-active');
+          h.querySelector('.sort-icon').innerHTML = '&#9650;&#9660;';
+        });
+        th.classList.add('sort-active');
+        th.querySelector('.sort-icon').innerHTML = sortDir === 'asc' ? '&#9650;' : '&#9660;';
+
+        renderTable();
+      });
+    });
+
+    // --- Initial render ---
+    renderTable();
+  </script>
+
+</body>
+</html>

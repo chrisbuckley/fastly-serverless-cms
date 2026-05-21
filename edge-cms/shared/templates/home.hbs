@@ -1,0 +1,44 @@
+<section class="posts-feed">
+
+  {{#each posts}}
+  <article class="post-card">
+    {{#if featured_image}}
+    <div class="post-card-featured">
+      <img src="{{featured_image}}?width=800&format=webp" alt="{{title}}">
+    </div>
+    {{/if}}
+    <div class="post-card-body">
+      <div class="post-card-meta">
+        <span>{{format_date created_at}}</span>
+        <span class="dot"></span>
+        <span>{{reading_time content}} min read</span>
+      </div>
+      <h2 class="post-card-title">
+        <a href="/post/{{slug}}">{{title}}</a>
+      </h2>
+      <p class="post-card-excerpt">
+        {{excerpt}}
+      </p>
+      <div class="post-card-footer">
+        <div class="post-tags">
+          {{#each tags}}
+          <a href="/tag/{{this}}" class="tag tag-accent">{{this}}</a>
+          {{/each}}
+        </div>
+        <a href="/post/{{slug}}" class="read-more">
+          Read
+          <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </a>
+      </div>
+    </div>
+  </article>
+  {{/each}}
+
+  {{#unless posts}}
+  <div class="empty-state" style="display:block;">
+    <div class="empty-state-title">No posts yet</div>
+    <div class="empty-state-text">Check back soon for new content.</div>
+  </div>
+  {{/unless}}
+
+</section>

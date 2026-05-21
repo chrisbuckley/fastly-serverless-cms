@@ -1659,28 +1659,46 @@ body::before {
   color: var(--text-light);
 }
 
-.field-slug {
-  position: relative;
+.slug-input-group {
+  display: flex;
+  align-items: center;
+  background-color: #ffffff;
+  border: 1px solid #ddd6cc;
+  border-radius: 6px;
+  overflow: hidden;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.slug-input-group:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(27, 107, 82, 0.1);
 }
 
 .slug-prefix {
-  position: absolute;
-  left: 0.85rem;
-  top: 50%;
-  transform: translateY(-50%);
   font-size: 0.85rem;
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-weight: 500;
-  pointer-events: none;
+  padding: 0.6rem 0 0.6rem 0.85rem;
+  white-space: nowrap;
+  flex-shrink: 0;
+  user-select: none;
 }
 
-.field-slug input {
+.field-slug .slug-input-group input {
   font-family: var(--font-mono);
   font-size: 0.85rem;
-  padding-left: 5.5rem;
   color: var(--text);
-  background: #ffffff;
+  background: transparent;
+  border: none;
+  padding: 0.6rem 0.85rem 0.6rem 0;
+  flex: 1;
+  min-width: 0;
+  outline: none;
+}
+
+.field-slug .slug-input-group input:focus {
+  box-shadow: none;
 }
 
 .field textarea {

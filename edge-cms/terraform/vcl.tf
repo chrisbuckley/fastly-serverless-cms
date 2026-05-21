@@ -30,11 +30,13 @@ resource "fastly_service_vcl" "cdn" {
     ssl_cert_hostname = "app.${var.domain}"
     ssl_sni_hostname  = "app.${var.domain}"
     override_host     = "app.${var.domain}"
-    shield            = var.shield_pop
 
     # Compute responses carry Surrogate-Control; respect them.
     first_byte_timeout    = 30000
     between_bytes_timeout = 10000
+
+    # IO requires shielding on ALL backends in the service.
+    shield = var.shield_pop
   }
 
   # ---------------------------------------------------------------------------
@@ -49,6 +51,7 @@ resource "fastly_service_vcl" "cdn" {
     ssl_cert_hostname = "${var.fos_region}.object.fastlystorage.app"
     ssl_sni_hostname  = "${var.fos_region}.object.fastlystorage.app"
     override_host     = "${var.fos_region}.object.fastlystorage.app"
+    shield            = var.shield_pop
 
     request_condition = "is-image-request"
   }
@@ -106,35 +109,7 @@ resource "fastly_service_vcl" "cdn" {
     priority = 100
     content  = <<-VCL
       if (req.url.path ~ "^/images/") {
-        # Strip query params from the Object Storage path — IO params are
-        # processed by Fastly Image Optimizer, not forwarded to the bucket.
-        declare local var.img_path STRING;
-        set var.img_path = req.url.path;
-
-        # Rewrite: /images/slug/file.jpg -> /edge-cms-images/slug/file.jpg
-        set req.url = regsuball(var.img_path, "^/images/", "/${var.fos_bucket}/");
-
-        # Stash original path for cache key (use URL before rewrite)
-        set req.http.X-Edge-CMS-Image-Path = var.img_path;
-
-        # Set backend explicitly — request_condition on F_edge_cms_fos checks
-        # req.url.path before the rewrite above, so it no longer matches after
-        # the URL is rewritten to /edge-cms-images/*. Explicit set wins.
         set req.backend = F_edge_cms_fos;
-      }
-    VCL
-  }
-
-  snippet {
-    name     = "images-cache-key"
-    type     = "hash"
-    priority = 100
-    content  = <<-VCL
-      # Use the original /images/... path as the cache key, not the rewritten
-      # /edge-cms-images/... path, so purges by surrogate key work correctly.
-      if (req.http.X-Edge-CMS-Image-Path) {
-        set req.url = req.http.X-Edge-CMS-Image-Path;
-        unset req.http.X-Edge-CMS-Image-Path;
       }
     VCL
   }
@@ -149,7 +124,7 @@ resource "fastly_service_vcl" "cdn" {
         # bereq.url starts as req.url, which was restored to /images/... by
         # images-cache-key in vcl_hash. Rewrite it back to the FOS path before
         # signing and sending.
-        set bereq.url = regsuball(bereq.url, "^/images/", "/${var.fos_bucket}/");
+        set bereq.url = regsuball(bereq.url.path, "^/images/", "/${var.fos_bucket}/");
 
         declare local var.access_key STRING;
         declare local var.secret_key STRING;
@@ -298,6 +273,10 @@ resource "fastly_service_vcl" "cdn" {
         ttfb_ms      = "%%{time.elapsed.msec}V"
       })
     }
+  }
+
+  product_enablement {
+    image_optimizer = true
   }
 
   force_destroy = true

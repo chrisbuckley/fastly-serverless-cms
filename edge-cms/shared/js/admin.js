@@ -162,15 +162,16 @@
         var file = e.dataTransfer.files[0];
         if (!file) return;
 
-        var formData = new FormData();
-        formData.append('file', file);
+        var slug = (slugInput && slugInput.value) ? slugInput.value : 'unnamed';
+        var url = '/admin/images?slug=' + encodeURIComponent(slug) +
+                  '&filename=' + encodeURIComponent(file.name);
 
         // Show uploading state
         imageZone.innerHTML =
           '<div class="image-upload-text"><strong>Uploading...</strong></div>' +
           '<div class="image-upload-hint">' + file.name + '</div>';
 
-        fetch('/admin/images', { method: 'POST', body: formData })
+        fetch(url, { method: 'POST', headers: { 'Content-Type': file.type }, body: file })
           .then(function (res) {
             if (!res.ok) throw new Error('Upload failed: ' + res.status);
             return res.json();

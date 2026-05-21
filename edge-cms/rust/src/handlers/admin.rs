@@ -544,14 +544,48 @@ pub fn upload_image(req: Request) -> Result<Response, Error> {
 
     let body_bytes = req.into_body_bytes();
 
+    eprintln!(
+        "[upload_image] slug={} filename={} content_type={} body_bytes={}",
+        slug,
+        filename,
+        content_type,
+        body_bytes.len()
+    );
+
     let secrets = SecretStore::open("secrets")?;
-    let access_key_id = read_secret(&secrets, "fos_access_key_id")?;
-    let secret_key = read_secret(&secrets, "fos_secret_key")?;
-    let region = read_secret(&secrets, "fos_region")?;
-    let bucket = read_secret(&secrets, "fos_bucket")?;
+    let access_key_id = match read_secret(&secrets, "fos_access_key_id") {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[upload_image] missing secret fos_access_key_id: {}", e);
+            return Err(e);
+        }
+    };
+    let secret_key = match read_secret(&secrets, "fos_secret_key") {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[upload_image] missing secret fos_secret_key: {}", e);
+            return Err(e);
+        }
+    };
+    let region = match read_secret(&secrets, "fos_region") {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[upload_image] missing secret fos_region: {}", e);
+            return Err(e);
+        }
+    };
+    let bucket = match read_secret(&secrets, "fos_bucket") {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[upload_image] missing secret fos_bucket: {}", e);
+            return Err(e);
+        }
+    };
 
     let host = format!("{}.object.fastlystorage.app", region);
     let path = format!("/{}/{}/{}", bucket, slug, filename);
+
+    eprintln!("[upload_image] PUT https://{}{}", host, path);
 
     let (datetime, date) = crate::sigv4::utc_datetime();
     let body_hash = crate::sigv4::sha256_hex(&body_bytes);
@@ -584,23 +618,43 @@ pub fn upload_image(req: Request) -> Result<Response, Error> {
         access_key_id, credential_scope, signed_headers, signature
     );
 
-    let fos_resp = Request::put(format!("https://{}{}", host, path))
+    eprintln!(
+        "[upload_image] signing datetime={} scope={} body_hash={}",
+        datetime, credential_scope, body_hash
+    );
+
+    let mut fos_resp = match Request::put(format!("https://{}{}", host, path))
         .with_header("Host", &host)
         .with_header("Content-Type", &content_type)
+        .with_header("Content-Length", body_bytes.len().to_string())
         .with_header("x-amz-date", &datetime)
         .with_header("x-amz-content-sha256", &body_hash)
         .with_header("Authorization", auth)
         .with_body(&body_bytes[..])
-        .send("fastly-object-storage")?;
+        .send("fastly-object-storage")
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[upload_image] send error: {:#}", e);
+            return Err(e.into());
+        }
+    };
 
-    if !fos_resp.get_status().is_success() {
+    let status = fos_resp.get_status();
+    eprintln!("[upload_image] FOS response status={}", status);
+
+    if !status.is_success() {
+        let err_body = fos_resp.take_body_str();
+        eprintln!("[upload_image] FOS error body: {}", err_body);
         return Err(Error::msg(format!(
-            "FOS PUT failed: {}",
-            fos_resp.get_status()
+            "FOS PUT failed: {} — {}",
+            status, err_body
         )));
     }
 
     let url = format!("/images/{}/{}", slug, filename);
+    eprintln!("[upload_image] success url={}", url);
+
     let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "application/json; charset=utf-8")
         .with_body(serde_json::to_string(&json!({ "url": url }))?);

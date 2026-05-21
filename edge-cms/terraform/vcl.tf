@@ -97,7 +97,7 @@ resource "fastly_service_vcl" "cdn" {
   condition {
     name      = "is-image-request"
     type      = "REQUEST"
-    statement = "req.url.path ~ \"^/images/\""
+    statement = "req.url.path ~ \"^/edge-cms-images/\""
   }
 
   snippet {
@@ -116,6 +116,11 @@ resource "fastly_service_vcl" "cdn" {
 
         # Stash original path for cache key (use URL before rewrite)
         set req.http.X-Edge-CMS-Image-Path = var.img_path;
+
+        # Set backend explicitly — request_condition on F_edge_cms_fos checks
+        # req.url.path before the rewrite above, so it no longer matches after
+        # the URL is rewritten to /edge-cms-images/*. Explicit set wins.
+        set req.backend = F_edge_cms_fos;
       }
     VCL
   }
@@ -141,6 +146,11 @@ resource "fastly_service_vcl" "cdn" {
     content  = <<-VCL
       # Only sign requests going to the Object Storage backend.
       if (req.backend == F_edge_cms_fos) {
+        # bereq.url starts as req.url, which was restored to /images/... by
+        # images-cache-key in vcl_hash. Rewrite it back to the FOS path before
+        # signing and sending.
+        set bereq.url = regsuball(bereq.url, "^/images/", "/${var.fos_bucket}/");
+
         declare local var.access_key STRING;
         declare local var.secret_key STRING;
         declare local var.datetime   STRING;

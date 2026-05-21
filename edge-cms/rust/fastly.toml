@@ -1,0 +1,46 @@
+manifest_version = 3
+name = "edge-cms"
+language = "rust"
+description = "A CMS running entirely on Fastly's edge platform"
+
+[local_server]
+
+  [local_server.kv_stores]
+
+    [local_server.kv_stores.content]
+      file = "tests/kv-content.json"
+
+    [local_server.kv_stores.images]
+      file = "tests/kv-images.json"
+
+  [local_server.secret_stores]
+
+    [local_server.secret_stores.secrets]
+
+      [[local_server.secret_stores.secrets.entries]]
+        key = "admin_password"
+        data = "$2b$12$LJ3m4ys7of5rMhBQ5MmQ4OhOsJrSey1UTLuFRHOoKOcVPuRSWPYm6"
+
+      [[local_server.secret_stores.secrets.entries]]
+        key = "hmac_key"
+        data = "dGVzdC1obWFjLWtleS1mb3ItbG9jYWwtZGV2ZWxvcG1lbnQ="
+
+[setup]
+
+  [setup.kv_stores]
+
+    [setup.kv_stores.content]
+
+    [setup.kv_stores.images]
+
+  [setup.secret_stores]
+
+    [setup.secret_stores.secrets]
+
+      [[setup.secret_stores.secrets.entries]]
+        key = "admin_password"
+        data = "$2b$12$LJ3m4ys7of5rMhBQ5MmQ4OhOsJrSey1UTLuFRHOoKOcVPuRSWPYm6"
+
+      [[setup.secret_stores.secrets.entries]]
+        key = "hmac_key"
+        data = "dGVzdC1obWFjLWtleS1mb3ItbG9jYWwtZGV2ZWxvcG1lbnQ="

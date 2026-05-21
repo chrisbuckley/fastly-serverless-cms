@@ -25,11 +25,11 @@ fn render_error(status: StatusCode, code: &str, message: &str) -> Result<Respons
         "pop_city": "Edge",
         "pop_code": "CDN",
     });
-    match templates::render("error", &data) {
+    match templates::render_page("error", &data) {
         Ok(html) => Ok(Response::from_status(status)
             .with_header("Content-Type", "text/html; charset=utf-8")
-            .with_body_text_plain(&html)),
+            .with_body(html)),
         Err(_) => Ok(Response::from_status(status)
-            .with_body_text_plain(&format!("{} {}\n", code, message))),
+            .with_body(format!("{} {}\n", code, message))),
     }
 }

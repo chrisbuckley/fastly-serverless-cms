@@ -1,7 +1,5 @@
 {
-  "data": {
-    "_index": "{\"posts\":[{\"slug\":\"hello-world\",\"title\":\"Hello World\",\"excerpt\":\"First post on edge/cms\",\"status\":\"published\",\"created_at\":\"2026-05-20T14:30:00Z\",\"tags\":[\"fastly\",\"edge\"],\"featured_image\":null}]}",
-    "post:hello-world": "{\"slug\":\"hello-world\",\"title\":\"Hello World\",\"content\":\"# Hello World\\n\\nThis is the first post.\",\"excerpt\":\"First post on edge/cms\",\"status\":\"published\",\"created_at\":\"2026-05-20T14:30:00Z\",\"updated_at\":\"2026-05-20T14:30:00Z\",\"tags\":[\"fastly\",\"edge\"],\"featured_image\":null,\"author\":\"Admin\"}",
-    "_sidebar": "{\"items\":[{\"type\":\"category\",\"label\":\"Getting Started\",\"slug\":\"getting-started\",\"children\":[\"hello-world\"]},{\"type\":\"link\",\"label\":\"GitHub\",\"url\":\"https://github.com\",\"icon\":\"github\"}]}"
-  }
+  "_index": "{\"posts\":[{\"slug\":\"hello-world\",\"title\":\"Hello World\",\"excerpt\":\"First post on edge/cms\",\"status\":\"published\",\"created_at\":\"2026-05-20T14:30:00Z\",\"tags\":[\"fastly\",\"edge\"],\"featured_image\":null}]}",
+  "post:hello-world": "{\"slug\":\"hello-world\",\"title\":\"Hello World\",\"content\":\"# Hello World\\n\\nThis is the first post.\",\"excerpt\":\"First post on edge/cms\",\"status\":\"published\",\"created_at\":\"2026-05-20T14:30:00Z\",\"updated_at\":\"2026-05-20T14:30:00Z\",\"tags\":[\"fastly\",\"edge\"],\"featured_image\":null,\"author\":\"Admin\"}",
+  "_sidebar": "{\"items\":[{\"type\":\"category\",\"label\":\"Getting Started\",\"slug\":\"getting-started\",\"children\":[\"hello-world\"]},{\"type\":\"link\",\"label\":\"GitHub\",\"url\":\"https://github.com\",\"icon\":\"github\"}]}"
 }

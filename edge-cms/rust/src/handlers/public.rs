@@ -85,10 +85,10 @@ pub fn home(req: &Request) -> Result<Response, Error> {
         "pop_code": pop_code,
     });
 
-    let html = templates::render("home", &data)?;
+    let html = templates::render_page("home", &data)?;
     let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "text/html; charset=utf-8")
-        .with_body_text_plain(&html);
+        .with_body(html);
 
     Ok(CacheHeaders::reader(vec!["post-index", "sidebar"]).apply(resp))
 }
@@ -141,11 +141,11 @@ pub fn post(req: &Request, slug: &str) -> Result<Response, Error> {
         "pop_code": pop_code,
     });
 
-    let html = templates::render("post", &data)?;
+    let html = templates::render_page("post", &data)?;
     let surrogate_key = format!("post-{}", slug);
     let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "text/html; charset=utf-8")
-        .with_body_text_plain(&html);
+        .with_body(html);
 
     Ok(CacheHeaders::reader(vec![&surrogate_key, "sidebar"]).apply(resp))
 }
@@ -170,10 +170,10 @@ pub fn tag(req: &Request, tag_name: &str) -> Result<Response, Error> {
         "page_title": format!("Posts tagged \"{}\"", tag_name),
     });
 
-    let html = templates::render("tag", &data)?;
+    let html = templates::render_page("tag", &data)?;
     let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "text/html; charset=utf-8")
-        .with_body_text_plain(&html);
+        .with_body(html);
 
     Ok(CacheHeaders::reader(vec!["post-index", "sidebar"]).apply(resp))
 }
@@ -213,7 +213,7 @@ pub fn feed(_req: &Request) -> Result<Response, Error> {
 
     let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "application/rss+xml; charset=utf-8")
-        .with_body_text_plain(&xml);
+        .with_body(xml);
 
     Ok(CacheHeaders::reader(vec!["post-index"]).apply(resp))
 }
@@ -242,7 +242,7 @@ pub fn sitemap(_req: &Request) -> Result<Response, Error> {
 
     let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "application/xml; charset=utf-8")
-        .with_body_text_plain(&xml);
+        .with_body(xml);
 
     Ok(CacheHeaders::reader(vec!["post-index"]).apply(resp))
 }
@@ -251,5 +251,5 @@ pub fn robots() -> Result<Response, Error> {
     let body = "User-agent: *\nAllow: /\nSitemap: /sitemap.xml\n";
     Ok(Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "text/plain; charset=utf-8")
-        .with_body_text_plain(body))
+        .with_body(body))
 }

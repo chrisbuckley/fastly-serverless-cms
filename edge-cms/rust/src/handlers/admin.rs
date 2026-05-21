@@ -127,7 +127,7 @@ pub fn login_page(req: &Request) -> Result<Response, Error> {
     let html = templates::render("login", &data)?;
     let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "text/html; charset=utf-8")
-        .with_body_text_plain(&html);
+        .with_body(html);
 
     Ok(cache::no_cache(resp))
 }
@@ -231,10 +231,10 @@ pub fn dashboard(req: &Request) -> Result<Response, Error> {
         "draft_count": draft_count,
     });
 
-    let html = templates::render("admin-dashboard", &data)?;
+    let html = templates::render_page("admin-dashboard", &data)?;
     let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "text/html; charset=utf-8")
-        .with_body_text_plain(&html);
+        .with_body(html);
 
     Ok(cache::no_cache(resp))
 }
@@ -253,10 +253,10 @@ pub fn new_post(req: &Request) -> Result<Response, Error> {
         "editing": false,
     });
 
-    let html = templates::render("admin-editor", &data)?;
+    let html = templates::render_page("admin-editor", &data)?;
     let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "text/html; charset=utf-8")
-        .with_body_text_plain(&html);
+        .with_body(html);
 
     Ok(cache::no_cache(resp))
 }
@@ -362,10 +362,10 @@ pub fn edit_post(req: &Request, slug: &str) -> Result<Response, Error> {
         },
     });
 
-    let html = templates::render("admin-editor", &data)?;
+    let html = templates::render_page("admin-editor", &data)?;
     let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "text/html; charset=utf-8")
-        .with_body_text_plain(&html);
+        .with_body(html);
 
     Ok(cache::no_cache(resp))
 }
@@ -528,7 +528,7 @@ pub fn upload_image(req: Request) -> Result<Response, Error> {
     let url = format!("/images/{}/{}", slug, filename);
     let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "application/json; charset=utf-8")
-        .with_body_text_plain(&serde_json::to_string(&json!({ "url": url }))?);
+        .with_body(serde_json::to_string(&json!({ "url": url }))?);
 
     Ok(cache::no_cache(resp))
 }
@@ -549,10 +549,10 @@ pub fn sidebar_page(req: &Request) -> Result<Response, Error> {
         "sidebar": sidebar,
     });
 
-    let html = templates::render("admin-sidebar", &data)?;
+    let html = templates::render_page("admin-sidebar", &data)?;
     let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "text/html; charset=utf-8")
-        .with_body_text_plain(&html);
+        .with_body(html);
 
     Ok(cache::no_cache(resp))
 }
@@ -574,7 +574,7 @@ pub fn update_sidebar(req: Request) -> Result<Response, Error> {
 
     let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "application/json; charset=utf-8")
-        .with_body_text_plain(&serde_json::to_string(&json!({ "ok": true }))?);
+        .with_body(serde_json::to_string(&json!({ "ok": true }))?);
 
     Ok(cache::no_cache(resp))
 }

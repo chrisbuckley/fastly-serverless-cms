@@ -64,6 +64,13 @@ pub fn render<T: Serialize>(template: &str, data: &T) -> Result<String, RenderEr
     registry().render(template, data)
 }
 
+pub fn render_page(template: &str, data: &serde_json::Value) -> Result<String, RenderError> {
+    let body = registry().render(template, data)?;
+    let mut layout_data = data.clone();
+    layout_data.as_object_mut().unwrap().insert("body".into(), serde_json::Value::String(body));
+    registry().render("layout", &layout_data)
+}
+
 // format_date: convert "2026-05-20T14:30:00Z" -> "May 20, 2026"
 fn format_date_helper(
     h: &Helper,

@@ -35,7 +35,7 @@ pub(crate) fn read_sidebar() -> Result<SidebarConfig, Error> {
 /// Extract city and POP code from the client's IP via Fastly geo lookup.
 fn geo_context(req: &Request) -> (String, String) {
     req.get_client_ip_addr()
-        .and_then(|ip| fastly::geo::geo_lookup(ip))
+        .and_then(fastly::geo::geo_lookup)
         .map(|geo| {
             let city = geo.city().to_string();
             let city = if city.is_empty() || city == "?" {
@@ -72,11 +72,7 @@ pub fn home(req: &Request) -> Result<Response, Error> {
     let sidebar = read_sidebar()?;
     let (pop_city, pop_code) = geo_context(req);
 
-    let published: Vec<_> = index
-        .published()
-        .into_iter()
-        .cloned()
-        .collect();
+    let published: Vec<_> = index.published().into_iter().cloned().collect();
 
     let data = json!({
         "posts": published,
@@ -155,11 +151,7 @@ pub fn tag(req: &Request, tag_name: &str) -> Result<Response, Error> {
     let sidebar = read_sidebar()?;
     let (pop_city, pop_code) = geo_context(req);
 
-    let filtered: Vec<_> = index
-        .by_tag(tag_name)
-        .into_iter()
-        .cloned()
-        .collect();
+    let filtered: Vec<_> = index.by_tag(tag_name).into_iter().cloned().collect();
 
     let data = json!({
         "tag": tag_name,
@@ -234,7 +226,10 @@ pub fn sitemap(_req: &Request) -> Result<Response, Error> {
     for post in &published {
         xml.push_str("  <url>\n");
         xml.push_str(&format!("    <loc>/post/{}</loc>\n", post.slug));
-        xml.push_str(&format!("    <lastmod>{}</lastmod>\n", &post.created_at[..10]));
+        xml.push_str(&format!(
+            "    <lastmod>{}</lastmod>\n",
+            &post.created_at[..10]
+        ));
         xml.push_str("  </url>\n");
     }
 

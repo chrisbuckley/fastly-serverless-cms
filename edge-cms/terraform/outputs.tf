@@ -37,14 +37,14 @@ output "fos_dict_id" {
 # ---------------------------------------------------------------------------
 # Squarespace DNS — routing CNAMEs
 # Add these to route traffic to Fastly.
-# j.sni.global.ssl.fastly.net serves both HTTP and HTTPS once TLS is active.
+# j.sni.global.fastly.net is the correct SNI endpoint for TLS subscriptions.
 # ---------------------------------------------------------------------------
 
 output "squarespace_dns_routing_cnames" {
   description = "Add these two CNAME records in Squarespace DNS"
   value = {
-    "${var.domain}."     = "CNAME  j.sni.global.ssl.fastly.net"
-    "app.${var.domain}." = "CNAME  j.sni.global.ssl.fastly.net"
+    "${var.domain}."     = "CNAME  j.sni.global.fastly.net"
+    "app.${var.domain}." = "CNAME  j.sni.global.fastly.net"
   }
 }
 
@@ -86,13 +86,13 @@ output "next_steps" {
       KV Store:       ${fastly_kvstore.content.id}
       Secret Store:   ${fastly_secretstore.secrets.id}
       FOS key ID:     ${fastly_object_storage_access_keys.fos.access_key_id}
-      FOS dict:       ${ { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_fos_creds"] }
+      FOS dict:       ${ { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_fos_creds"]}
 
     ── DNS (Squarespace) ────────────────────────────────────────────────────
 
     Routing CNAMEs (see squarespace_dns_routing_cnames output):
-      ${var.domain}        →  j.sni.global.ssl.fastly.net
-      app.${var.domain}    →  j.sni.global.ssl.fastly.net
+      ${var.domain}        →  j.sni.global.fastly.net
+      app.${var.domain}    →  j.sni.global.fastly.net
 
     TLS validation CNAMEs — after running tls_provisioning_commands:
       terraform output tls_provisioning_commands   # shows CLI commands
@@ -102,19 +102,22 @@ output "next_steps" {
 
     # Generate admin password hash (Python bcrypt):
     BCRYPT=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'YOUR_PASSWORD', bcrypt.gensalt()).decode())")
+    FOS_SECRET=$(terraform output -raw fos_secret_key)
 
     SSID="${fastly_secretstore.secrets.id}"
-    fastly secret-store-entry create --store-id=$SSID --name=admin_password  --secret="$BCRYPT"
-    fastly secret-store-entry create --store-id=$SSID --name=hmac_key        --secret="$(openssl rand -base64 32)"
-    fastly secret-store-entry create --store-id=$SSID --name=fastly_api_token --secret="${fastly_object_storage_access_keys.fos.access_key_id}"
-    fastly secret-store-entry create --store-id=$SSID --name=purge_service_id --secret="${fastly_service_vcl.cdn.id}"
-    fastly secret-store-entry create --store-id=$SSID --name=fos_access_key_id --secret="${fastly_object_storage_access_keys.fos.access_key_id}"
-    fastly secret-store-entry create --store-id=$SSID --name=fos_secret_key    --secret="$(terraform output -raw fos_secret_key)"
+    echo -n "$BCRYPT"                                        | fastly secret-store-entry create --store-id=$SSID --name=admin_password   --stdin --recreate-allow
+    echo -n "$(openssl rand -base64 32)"                    | fastly secret-store-entry create --store-id=$SSID --name=hmac_key         --stdin --recreate-allow
+    echo -n '<YOUR_FASTLY_API_TOKEN>'                        | fastly secret-store-entry create --store-id=$SSID --name=fastly_api_token  --stdin --recreate-allow  # needs purge scope on VCL service
+    echo -n "${fastly_service_vcl.cdn.id}"                  | fastly secret-store-entry create --store-id=$SSID --name=purge_service_id  --stdin --recreate-allow
+    echo -n "${fastly_object_storage_access_keys.fos.access_key_id}" | fastly secret-store-entry create --store-id=$SSID --name=fos_access_key_id --stdin --recreate-allow
+    echo -n "$FOS_SECRET"                                   | fastly secret-store-entry create --store-id=$SSID --name=fos_secret_key    --stdin --recreate-allow
+    echo -n "${var.fos_region}"                             | fastly secret-store-entry create --store-id=$SSID --name=fos_region        --stdin --recreate-allow
+    echo -n "${var.fos_bucket}"                             | fastly secret-store-entry create --store-id=$SSID --name=fos_bucket        --stdin --recreate-allow
 
     ── VCL Dictionary (FOS SigV4 credentials) ──────────────────────────────
 
     VCL_SID="${fastly_service_vcl.cdn.id}"
-    DICT_ID="${ { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_fos_creds"] }"
+    DICT_ID="${ { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_fos_creds"]}"
 
     fastly service-dictionary-item create --service-id=$VCL_SID --dictionary-id=$DICT_ID \
       --key=access_key_id --value="${fastly_object_storage_access_keys.fos.access_key_id}"

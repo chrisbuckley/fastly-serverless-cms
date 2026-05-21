@@ -9,11 +9,7 @@ pub fn static_file(path: &str) -> Result<Response, Error> {
     let (body, content_type) = match path {
         "style.css" => (templates::CSS, "text/css; charset=utf-8"),
         "admin.js" => (templates::ADMIN_JS, "application/javascript; charset=utf-8"),
-        _ => {
-            return Ok(
-                Response::from_status(StatusCode::NOT_FOUND).with_body("Asset not found\n")
-            )
-        }
+        _ => return Ok(Response::from_status(StatusCode::NOT_FOUND).with_body("Asset not found\n")),
     };
     let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", content_type)
@@ -46,9 +42,9 @@ pub fn image(_req: &Request, path: &str) -> Result<Response, Error> {
                 .with_body_octet_stream(&bytes);
             Ok(CacheHeaders::reader(vec![&format!("image-{}", slug)]).apply(resp))
         }
-        Err(KVStoreError::ItemNotFound) => Ok(
-            Response::from_status(StatusCode::NOT_FOUND).with_body("Image not found\n")
-        ),
+        Err(KVStoreError::ItemNotFound) => {
+            Ok(Response::from_status(StatusCode::NOT_FOUND).with_body("Image not found\n"))
+        }
         Err(e) => Err(e.into()),
     }
 }

@@ -29,7 +29,6 @@ fn render_error(status: StatusCode, code: &str, message: &str) -> Result<Respons
         Ok(html) => Ok(Response::from_status(status)
             .with_header("Content-Type", "text/html; charset=utf-8")
             .with_body(html)),
-        Err(_) => Ok(Response::from_status(status)
-            .with_body(format!("{} {}\n", code, message))),
+        Err(_) => Ok(Response::from_status(status).with_body(format!("{} {}\n", code, message))),
     }
 }

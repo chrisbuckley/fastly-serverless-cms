@@ -16,13 +16,13 @@ use crate::templates;
 // Auth helpers
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::result_large_err)] // fastly::Response is intentionally large in Compute
 fn require_auth(req: &Request) -> Result<(), Response> {
     let cookie_header = req.get_header_str("Cookie").unwrap_or("");
     let token = crate::auth::extract_cookie(cookie_header, "session")
         .ok_or_else(|| redirect_to_login("expired"))?;
 
-    let secrets =
-        SecretStore::open("secrets").map_err(|_| redirect_to_login("error"))?;
+    let secrets = SecretStore::open("secrets").map_err(|_| redirect_to_login("error"))?;
 
     let hmac_secret = secrets
         .try_get("hmac_key")
@@ -275,9 +275,15 @@ pub fn create_post(req: Request) -> Result<Response, Error> {
     let title = form.get("title").cloned().unwrap_or_default();
     let content = form.get("content").cloned().unwrap_or_default();
     let excerpt = form.get("excerpt").cloned().unwrap_or_default();
-    let status_str = form.get("status").cloned().unwrap_or_else(|| "draft".into());
+    let status_str = form
+        .get("status")
+        .cloned()
+        .unwrap_or_else(|| "draft".into());
     let tags_str = form.get("tags").cloned().unwrap_or_default();
-    let featured_image = form.get("featured_image").cloned().filter(|s| !s.is_empty());
+    let featured_image = form
+        .get("featured_image")
+        .cloned()
+        .filter(|s| !s.is_empty());
 
     let status = if status_str == "published" {
         PostStatus::Published
@@ -409,9 +415,15 @@ pub fn update_post(req: Request, slug: &str) -> Result<Response, Error> {
         .get("excerpt")
         .cloned()
         .unwrap_or_else(|| old_post.excerpt.clone());
-    let status_str = form.get("status").cloned().unwrap_or_else(|| "draft".into());
+    let status_str = form
+        .get("status")
+        .cloned()
+        .unwrap_or_else(|| "draft".into());
     let tags_str = form.get("tags").cloned().unwrap_or_default();
-    let featured_image = form.get("featured_image").cloned().filter(|s| !s.is_empty());
+    let featured_image = form
+        .get("featured_image")
+        .cloned()
+        .filter(|s| !s.is_empty());
 
     let status = if status_str == "published" {
         PostStatus::Published
@@ -502,13 +514,21 @@ pub fn delete_post(req: &Request, slug: &str) -> Result<Response, Error> {
 // Image upload
 // ---------------------------------------------------------------------------
 
+fn read_secret(secrets: &SecretStore, name: &str) -> Result<String, Error> {
+    let s = secrets
+        .try_get(name)?
+        .ok_or_else(|| Error::msg(format!("missing secret: {}", name)))?;
+    Ok(String::from_utf8_lossy(&s.plaintext()).into_owned())
+}
+
+/// PUT image bytes to Fastly Object Storage using SigV4 signing.
+/// POST /admin/images?slug=my-post&filename=hero.jpg
+/// Body: raw image bytes. Content-Type header must match the file type.
 pub fn upload_image(req: Request) -> Result<Response, Error> {
     if let Err(resp) = require_auth(&req) {
         return Ok(resp);
     }
 
-    // For simplicity, accept the image as raw body with filename and slug
-    // provided as query parameters: POST /admin/images?slug=my-post&filename=hero.jpg
     let slug = req
         .get_query_parameter("slug")
         .unwrap_or("unnamed")
@@ -517,13 +537,68 @@ pub fn upload_image(req: Request) -> Result<Response, Error> {
         .get_query_parameter("filename")
         .unwrap_or("upload.bin")
         .to_string();
+    let content_type = req
+        .get_header_str("Content-Type")
+        .unwrap_or("application/octet-stream")
+        .to_string();
 
     let body_bytes = req.into_body_bytes();
 
-    let store =
-        KVStore::open("images")?.ok_or_else(|| Error::msg("images store not found"))?;
-    let key = format!("images/{}/{}", slug, filename);
-    store.insert(&key, body_bytes)?;
+    let secrets = SecretStore::open("secrets")?;
+    let access_key_id = read_secret(&secrets, "fos_access_key_id")?;
+    let secret_key = read_secret(&secrets, "fos_secret_key")?;
+    let region = read_secret(&secrets, "fos_region")?;
+    let bucket = read_secret(&secrets, "fos_bucket")?;
+
+    let host = format!("{}.object.fastlystorage.app", region);
+    let path = format!("/{}/{}/{}", bucket, slug, filename);
+
+    let (datetime, date) = crate::sigv4::utc_datetime();
+    let body_hash = crate::sigv4::sha256_hex(&body_bytes);
+
+    // Canonical headers must be sorted alphabetically by header name.
+    let canonical_headers = format!(
+        "content-type:{}\nhost:{}\nx-amz-content-sha256:{}\nx-amz-date:{}\n",
+        content_type, host, body_hash, datetime
+    );
+    let signed_headers = "content-type;host;x-amz-content-sha256;x-amz-date";
+
+    let canonical_request = format!(
+        "PUT\n{}\n\n{}\n{}\n{}",
+        path, canonical_headers, signed_headers, body_hash
+    );
+
+    let credential_scope = format!("{}/{}/s3/aws4_request", date, region);
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{}\n{}\n{}",
+        datetime,
+        credential_scope,
+        crate::sigv4::sha256_hex(canonical_request.as_bytes())
+    );
+
+    let signing_key = crate::sigv4::derive_signing_key(&secret_key, &date, &region, "s3");
+    let signature = crate::sigv4::sign(&signing_key, &string_to_sign);
+
+    let auth = format!(
+        "AWS4-HMAC-SHA256 Credential={}/{}, SignedHeaders={}, Signature={}",
+        access_key_id, credential_scope, signed_headers, signature
+    );
+
+    let fos_resp = Request::put(format!("https://{}{}", host, path))
+        .with_header("Host", &host)
+        .with_header("Content-Type", &content_type)
+        .with_header("x-amz-date", &datetime)
+        .with_header("x-amz-content-sha256", &body_hash)
+        .with_header("Authorization", auth)
+        .with_body(&body_bytes[..])
+        .send("fastly-object-storage")?;
+
+    if !fos_resp.get_status().is_success() {
+        return Err(Error::msg(format!(
+            "FOS PUT failed: {}",
+            fos_resp.get_status()
+        )));
+    }
 
     let url = format!("/images/{}/{}", slug, filename);
     let resp = Response::from_status(StatusCode::OK)

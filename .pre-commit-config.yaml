@@ -27,3 +27,73 @@ repos:
         language: script
         types: [file]
         verbose: true
+
+      # ── Terraform ────────────────────────────────────────────────────────
+      - id: terraform-fmt
+        name: terraform fmt
+        entry: terraform fmt -check -recursive
+        language: system
+        files: \.tf$
+        pass_filenames: false
+
+      # ── VCL (falco) ──────────────────────────────────────────────────────
+      # Runs on standalone .vcl files. VCL embedded inline in Terraform HCL
+      # is validated by the Fastly provider at apply time. Extract snippets
+      # to .vcl files (loaded via templatefile()) to get pre-commit coverage.
+      - id: falco-fmt
+        name: falco fmt
+        entry: falco fmt --check
+        language: system
+        files: \.vcl$
+
+      - id: falco-lint
+        name: falco lint
+        entry: falco lint
+        language: system
+        files: \.vcl$
+
+      # ── Rust: edge-cms ───────────────────────────────────────────────────
+      # Uses wasm32-wasip1 because the fastly crate only builds for
+      # Compute/WASM — native target fails to compile.
+      - id: rust-fmt-edge-cms
+        name: cargo fmt (edge-cms/rust)
+        entry: bash -c 'cd edge-cms/rust && cargo fmt -- --check'
+        language: system
+        files: ^edge-cms/rust/.*\.(rs|toml)$
+        pass_filenames: false
+
+      - id: rust-clippy-edge-cms
+        name: cargo clippy (edge-cms/rust)
+        entry: bash -c 'cd edge-cms/rust && cargo clippy --quiet --target wasm32-wasip1 -- -D warnings'
+        language: system
+        files: ^edge-cms/rust/.*\.rs$
+        pass_filenames: false
+
+      # ── Go (future) ──────────────────────────────────────────────────────
+      # - id: go-vet
+      #   name: go vet
+      #   entry: bash -c 'cd <example-dir> && go vet ./...'
+      #   language: system
+      #   files: ^<example-dir>/.*\.go$
+      #   pass_filenames: false
+      #
+      # - id: go-fmt
+      #   name: gofmt
+      #   entry: gofmt -l -e
+      #   language: system
+      #   files: \.go$
+
+      # ── TypeScript (future) ───────────────────────────────────────────────
+      # - id: ts-check
+      #   name: tsc --noEmit
+      #   entry: bash -c 'cd <example-dir> && npx tsc --noEmit'
+      #   language: system
+      #   files: ^<example-dir>/.*\.ts$
+      #   pass_filenames: false
+      #
+      # - id: ts-fmt
+      #   name: prettier --check
+      #   entry: bash -c 'cd <example-dir> && npx prettier --check "src/**/*.ts"'
+      #   language: system
+      #   files: ^<example-dir>/.*\.ts$
+      #   pass_filenames: false

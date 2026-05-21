@@ -9,6 +9,7 @@ mod handlers;
 mod markdown;
 mod models;
 mod router;
+mod sigv4;
 mod templates;
 
 #[fastly::main]
@@ -44,7 +45,7 @@ fn main(req: Request) -> Result<Response, Error> {
     // In local dev (Viceroy), eprintln! output goes to stderr for debugging.
     // In production, replace with fastly::log::Endpoint for real-time log
     // streaming to an external drain (e.g., BigQuery, S3, Datadog).
-    let resp = match result {
+    let resp_result = match result {
         Ok(resp) => {
             let timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -65,5 +66,9 @@ fn main(req: Request) -> Result<Response, Error> {
         }
     };
 
-    resp
+    let mut resp = resp_result?;
+    if let Ok(v) = std::env::var("FASTLY_SERVICE_VERSION") {
+        resp.set_header("X-Edge-CMS-Compute-Version", v);
+    }
+    Ok(resp)
 }

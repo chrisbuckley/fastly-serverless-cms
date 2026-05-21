@@ -67,19 +67,16 @@ pub fn verify_password(password: &str, hash: &str) -> Result<(), AuthError> {
 }
 
 pub fn extract_cookie(header: &str, name: &str) -> Option<String> {
-    header
-        .split(';')
-        .map(|s| s.trim())
-        .find_map(|pair| {
-            let mut parts = pair.splitn(2, '=');
-            let key = parts.next()?.trim();
-            let value = parts.next()?.trim();
-            if key == name {
-                Some(value.to_string())
-            } else {
-                None
-            }
-        })
+    header.split(';').map(|s| s.trim()).find_map(|pair| {
+        let mut parts = pair.splitn(2, '=');
+        let key = parts.next()?.trim();
+        let value = parts.next()?.trim();
+        if key == name {
+            Some(value.to_string())
+        } else {
+            None
+        }
+    })
 }
 
 pub fn session_cookie(token: &str) -> String {

@@ -17,10 +17,7 @@ impl CacheHeaders {
     }
 
     pub fn apply(self, mut resp: Response) -> Response {
-        resp.set_header(
-            "Surrogate-Control",
-            format!("max-age={}", self.edge_ttl),
-        );
+        resp.set_header("Surrogate-Control", format!("max-age={}", self.edge_ttl));
         resp.set_header(
             "Cache-Control",
             format!("max-age={}, public", self.browser_ttl),

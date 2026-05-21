@@ -49,6 +49,8 @@ resource "fastly_service_vcl" "cdn" {
     ssl_cert_hostname = "${var.fos_region}.object.fastlystorage.app"
     ssl_sni_hostname  = "${var.fos_region}.object.fastlystorage.app"
     override_host     = "${var.fos_region}.object.fastlystorage.app"
+
+    request_condition = "is-image-request"
   }
 
   # ---------------------------------------------------------------------------
@@ -81,13 +83,29 @@ resource "fastly_service_vcl" "cdn" {
   # ---------------------------------------------------------------------------
 
   snippet {
+    name     = "admin-pass"
+    type     = "recv"
+    priority = 50
+    content  = <<-VCL
+      if (req.url.path ~ "^/admin") {
+        set req.backend = F_edge_cms_compute;
+        return(pass);
+      }
+    VCL
+  }
+
+  condition {
+    name      = "is-image-request"
+    type      = "REQUEST"
+    statement = "req.url.path ~ \"^/images/\""
+  }
+
+  snippet {
     name     = "images-route"
     type     = "recv"
     priority = 100
     content  = <<-VCL
       if (req.url.path ~ "^/images/") {
-        set req.backend = F_edge_cms_fos;
-
         # Strip query params from the Object Storage path — IO params are
         # processed by Fastly Image Optimizer, not forwarded to the bucket.
         declare local var.img_path STRING;
@@ -204,6 +222,15 @@ resource "fastly_service_vcl" "cdn" {
       unset resp.http.X-Amz-Request-Id;
       unset resp.http.X-Amz-Id-2;
       unset resp.http.X-Amz-Version-Id;
+    VCL
+  }
+
+  snippet {
+    name     = "debug-headers"
+    type     = "deliver"
+    priority = 10
+    content  = <<-VCL
+      set resp.http.X-Edge-CMS-VCL-Version = req.vcl.version;
     VCL
   }
 

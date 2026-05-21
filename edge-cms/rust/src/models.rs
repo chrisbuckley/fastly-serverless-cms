@@ -132,7 +132,11 @@ mod tests {
         assert_eq!(fastly_posts[0].slug, "hello-world");
 
         let wip_posts = index.by_tag("wip");
-        assert_eq!(wip_posts.len(), 0, "draft posts should not appear in by_tag");
+        assert_eq!(
+            wip_posts.len(),
+            0,
+            "draft posts should not appear in by_tag"
+        );
     }
 
     #[test]

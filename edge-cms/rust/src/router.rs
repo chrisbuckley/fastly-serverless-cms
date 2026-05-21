@@ -67,16 +67,10 @@ pub fn match_route(method: &str, path: &str) -> Route {
             }
         }
         ("PUT", p) if p.starts_with("/admin/posts/") => Route::AdminUpdatePost {
-            slug: p
-                .strip_prefix("/admin/posts/")
-                .unwrap()
-                .to_string(),
+            slug: p.strip_prefix("/admin/posts/").unwrap().to_string(),
         },
         ("DELETE", p) if p.starts_with("/admin/posts/") => Route::AdminDeletePost {
-            slug: p
-                .strip_prefix("/admin/posts/")
-                .unwrap()
-                .to_string(),
+            slug: p.strip_prefix("/admin/posts/").unwrap().to_string(),
         },
         _ => Route::NotFound,
     }

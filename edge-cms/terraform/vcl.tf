@@ -100,7 +100,7 @@ resource "fastly_service_vcl" "cdn" {
   condition {
     name      = "is-image-request"
     type      = "REQUEST"
-    statement = "req.url.path ~ \"^/edge-cms-images/\""
+    statement = "req.url.path ~ \"^/images/\""
   }
 
   snippet {
@@ -121,9 +121,8 @@ resource "fastly_service_vcl" "cdn" {
     content  = <<-VCL
       # Only sign requests going to the Object Storage backend.
       if (req.backend == F_edge_cms_fos) {
-        # bereq.url starts as req.url, which was restored to /images/... by
-        # images-cache-key in vcl_hash. Rewrite it back to the FOS path before
-        # signing and sending.
+        # bereq.url starts as req.url (/images/slug/file.jpg with IO params).
+        # Strip IO params via .path and rewrite to FOS bucket path before signing.
         set bereq.url = regsuball(bereq.url.path, "^/images/", "/${var.fos_bucket}/");
 
         declare local var.access_key STRING;
@@ -163,7 +162,7 @@ resource "fastly_service_vcl" "cdn" {
         declare local var.credential_scope STRING;
         set var.credential_scope = var.date + "/" + var.region + "/s3/aws4_request";
 
-        # Canonical request (no query string — IO params stripped in recv)
+        # Canonical request (no query string — IO params already stripped above)
         declare local var.canonical_request STRING;
         set var.canonical_request =
           "GET" + LF +

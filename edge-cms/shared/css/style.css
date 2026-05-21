@@ -38,6 +38,7 @@
 html {
   font-size: 16px;
   scroll-behavior: smooth;
+  color-scheme: light;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -1616,12 +1617,14 @@ body::before {
 }
 
 .field input[type="text"],
+.field input[type="password"],
 .field textarea,
 .field select {
   font-family: var(--font-body);
   font-size: 0.9rem;
   color: var(--text);
-  background: #ffffff;
+  color-scheme: light;
+  background-color: #ffffff;
   border: 1px solid #ddd6cc;
   border-radius: 6px;
   padding: 0.6rem 0.85rem;
@@ -1666,9 +1669,9 @@ body::before {
   top: 50%;
   transform: translateY(-50%);
   font-size: 0.85rem;
-  color: var(--text-light);
+  color: var(--text-muted);
   font-family: var(--font-mono);
-  font-weight: 400;
+  font-weight: 500;
   pointer-events: none;
 }
 
@@ -1676,7 +1679,8 @@ body::before {
   font-family: var(--font-mono);
   font-size: 0.85rem;
   padding-left: 5.5rem;
-  color: var(--accent);
+  color: var(--text);
+  background: #ffffff;
 }
 
 .field textarea {

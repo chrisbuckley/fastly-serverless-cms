@@ -21,15 +21,9 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
 fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();
     let shared_dir = Path::new("../shared");
-
-    let templates_dst = Path::new(&out_dir).join("templates");
-    let css_dst = Path::new(&out_dir).join("css");
-    let js_dst = Path::new(&out_dir).join("js");
-
-    copy_dir_recursive(&shared_dir.join("templates"), &templates_dst);
-    copy_dir_recursive(&shared_dir.join("css"), &css_dst);
-    copy_dir_recursive(&shared_dir.join("js"), &js_dst);
-
+    copy_dir_recursive(&shared_dir.join("templates"), &Path::new(&out_dir).join("templates"));
+    copy_dir_recursive(&shared_dir.join("css"), &Path::new(&out_dir).join("css"));
+    copy_dir_recursive(&shared_dir.join("js"), &Path::new(&out_dir).join("js"));
     println!("cargo:rerun-if-changed=../shared/templates");
     println!("cargo:rerun-if-changed=../shared/css");
     println!("cargo:rerun-if-changed=../shared/js");

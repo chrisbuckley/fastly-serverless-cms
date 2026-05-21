@@ -13,7 +13,6 @@ pub fn render_markdown(input: &str) -> String {
 /// Rewrites `<img src="/images/...">` tags in rendered HTML to `<picture srcset>`
 /// elements with 480w/800w/1280w WebP variants served via Fastly Image Optimizer.
 /// Non-`/images/` src values are left unchanged.
-#[allow(dead_code)]
 pub fn rewrite_images(html: &str) -> String {
     let mut out = String::with_capacity(html.len() * 2);
     let mut rest = html;
@@ -46,7 +45,6 @@ pub fn rewrite_images(html: &str) -> String {
     out
 }
 
-#[allow(dead_code)]
 fn responsive_picture(src: &str, alt: &str) -> String {
     format!(
         concat!(

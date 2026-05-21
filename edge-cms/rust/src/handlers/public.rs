@@ -111,7 +111,7 @@ pub fn post(req: &Request, slug: &str) -> Result<Response, Error> {
 
     let sidebar = read_sidebar()?;
     let (pop_city, pop_code) = geo_context(req);
-    let rendered_content = markdown::render_markdown(&post.content);
+    let rendered_content = markdown::rewrite_images(&markdown::render_markdown(&post.content));
     let canonical_url = format!("/post/{}", slug);
 
     let data = json!({

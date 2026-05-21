@@ -66,7 +66,9 @@ pub fn match_route(method: &str, path: &str) -> Route {
                 Route::NotFound
             }
         }
-        ("PUT", p) if p.starts_with("/admin/posts/") => Route::AdminUpdatePost {
+        // HTML forms can only POST; the edit form submits POST /admin/posts/:slug.
+        // PUT /admin/posts/:slug is kept for API/fetch callers.
+        ("POST" | "PUT", p) if p.starts_with("/admin/posts/") => Route::AdminUpdatePost {
             slug: p.strip_prefix("/admin/posts/").unwrap().to_string(),
         },
         ("DELETE", p) if p.starts_with("/admin/posts/") => Route::AdminDeletePost {

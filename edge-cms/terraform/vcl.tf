@@ -110,6 +110,7 @@ resource "fastly_service_vcl" "cdn" {
     content  = <<-VCL
       if (req.url.path ~ "^/images/") {
         set req.backend = F_edge_cms_fos;
+        set req.http.X-Fastly-Imageopto-Api = "fastly";
       }
     VCL
   }

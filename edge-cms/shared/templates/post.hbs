@@ -46,4 +46,20 @@
     </button>
   </div>
 
+  <!-- JSON-LD structured data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "{{title}}",
+    "description": "{{excerpt}}",
+    "author": { "@type": "Person", "name": "{{author}}" },
+    "datePublished": "{{created_at}}",
+    {{#if featured_image}}
+    "image": "{{featured_image}}",
+    {{/if}}
+    "mainEntityOfPage": { "@type": "WebPage", "@id": "{{canonical_url}}" }
+  }
+  </script>
+
 </article>

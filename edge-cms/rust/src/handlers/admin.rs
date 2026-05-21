@@ -133,6 +133,17 @@ pub fn login_page(req: &Request) -> Result<Response, Error> {
 }
 
 pub fn login_submit(req: Request) -> Result<Response, Error> {
+    // Rate limiting: In production, configure via Fastly's edge rate limiting
+    // product to enforce 5 attempts/min per client IP on POST /admin/login.
+    // See DESIGN.md for details. When rate limiting triggers, the platform
+    // returns a 429 before the request reaches Compute — no app code needed.
+    // For observability, log each login attempt:
+    let client_ip = req
+        .get_client_ip_addr()
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| "unknown".into());
+    eprintln!("[login_attempt] ip={}", client_ip);
+
     let body = req.into_body_str();
     let form = parse_form_body(&body);
 

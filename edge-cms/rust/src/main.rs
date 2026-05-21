@@ -1,3 +1,5 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use fastly::{Error, Request, Response};
 
 mod auth;
@@ -38,11 +40,30 @@ fn main(req: Request) -> Result<Response, Error> {
         router::Route::NotFound => error::not_found(),
     };
 
-    match result {
-        Ok(resp) => Ok(resp),
+    // Structured request logging.
+    // In local dev (Viceroy), eprintln! output goes to stderr for debugging.
+    // In production, replace with fastly::log::Endpoint for real-time log
+    // streaming to an external drain (e.g., BigQuery, S3, Datadog).
+    let resp = match result {
+        Ok(resp) => {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            eprintln!(
+                "[{}] {} {} {}",
+                timestamp,
+                method,
+                path,
+                resp.get_status().as_u16()
+            );
+            Ok(resp)
+        }
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("error: {} {} - {}", method, path, e);
             error::internal_error()
         }
-    }
+    };
+
+    resp
 }

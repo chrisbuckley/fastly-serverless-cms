@@ -1,0 +1,120 @@
+name: edge-cms CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths: [edge-cms/**]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-checks:
+    name: Rust (fmt + clippy + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: edge-cms/rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+          components: clippy, rustfmt
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            edge-cms/rust/target
+          key: rust-${{ hashFiles('edge-cms/rust/Cargo.lock') }}
+          restore-keys: rust-
+
+      - run: cargo fmt -- --check
+      - run: cargo clippy --target wasm32-wasip1 -- -D warnings
+      - run: cargo test
+
+  go-checks:
+    name: Go (vet + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: edge-cms/go
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: edge-cms/go/go.sum
+
+      - run: cp -r ../shared ./shared
+      - run: go vet ./...
+      - run: go test -v ./...
+
+  terraform-checks:
+    name: Terraform (fmt + validate)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: edge-cms/terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false
+      - run: terraform validate
+
+  integration-tests:
+    name: Integration (Viceroy)
+    runs-on: ubuntu-latest
+    needs: rust-checks
+    defaults:
+      run:
+        working-directory: edge-cms/rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            edge-cms/rust/target
+          key: rust-${{ hashFiles('edge-cms/rust/Cargo.lock') }}
+          restore-keys: rust-
+
+      - name: Install Fastly CLI
+        run: |
+          wget -q "https://github.com/fastly/cli/releases/latest/download/fastly_linux-amd64.deb" -O /tmp/fastly.deb
+          sudo dpkg -i /tmp/fastly.deb
+
+      - name: Build Compute package
+        run: fastly compute build
+
+      - name: Start Viceroy and run tests
+        run: |
+          fastly compute serve &
+          for i in $(seq 1 30); do
+            curl -s http://127.0.0.1:7676/ > /dev/null 2>&1 && break
+            sleep 1
+          done
+          ./tests/integration.sh
+
+  detect-secrets:
+    name: Detect secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: pip install detect-secrets==1.5.0
+      - run: detect-secrets scan --baseline .secrets.baseline

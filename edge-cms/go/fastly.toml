@@ -3,6 +3,9 @@ name = "edge-cms-go"
 language = "go"
 description = "Edge CMS — Go implementation"
 
+[scripts]
+build = "GOARCH=wasm GOOS=wasip1 go build -o bin/main.wasm ."
+
 [local_server]
   [local_server.kv_stores]
     [local_server.kv_stores.content]

@@ -96,6 +96,34 @@ jobs:
           done
           ./tests/integration.sh
 
+  vcl-checks:
+    name: VCL (falco fmt + lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install falco
+        run: |
+          curl -sL "https://github.com/ysugimoto/falco/releases/latest/download/falco_linux_amd64.tar.gz" | sudo tar xz -C /usr/local/bin falco
+
+      - name: Check for VCL files
+        id: vcl-files
+        run: |
+          if find edge-cms -name '*.vcl' | grep -q .; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No .vcl files found — skipping"
+          fi
+
+      - name: falco fmt --check
+        if: steps.vcl-files.outputs.found == 'true'
+        run: find edge-cms -name '*.vcl' -exec falco fmt --check {} +
+
+      - name: falco lint
+        if: steps.vcl-files.outputs.found == 'true'
+        run: find edge-cms -name '*.vcl' -exec falco lint {} +
+
   detect-secrets:
     name: Detect secrets
     runs-on: ubuntu-latest

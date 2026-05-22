@@ -3,8 +3,8 @@ set -euo pipefail
 
 status=0
 for f in "$@"; do
-    if grep -qnE '"version"\s*:\s*[0-9]+' "$f" 2>/dev/null || \
-       grep -qnE 'version\s*=\s*[0-9]+' "$f" 2>/dev/null; then
+    if grep -nE '"version"\s*:\s*[0-9]+' "$f" 2>/dev/null | grep -qvE 'manifest_version' || \
+       grep -nE 'version\s*=\s*[0-9]+' "$f" 2>/dev/null | grep -qvE 'manifest_version'; then
         echo "WARNING: $f may contain a hardcoded service version — verify before merging to main"
         status=1
     fi

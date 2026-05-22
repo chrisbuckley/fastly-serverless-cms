@@ -14,6 +14,10 @@ build = "GOARCH=wasm GOOS=wasip1 go build -o bin/main.wasm ."
     [local_server.kv_stores.images]
       file = "tests/kv-images.json"
       format = "json"
+  [local_server.config_stores]
+    [local_server.config_stores.cache_config]
+      file = "tests/cache-config.json"
+      format = "json"
   [local_server.secret_stores]
     [local_server.secret_stores.secrets]
       file = "tests/secrets.json"

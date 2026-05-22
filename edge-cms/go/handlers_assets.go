@@ -22,7 +22,7 @@ func handleStaticFile(w fsthttp.ResponseWriter, path string) {
 		return
 	}
 	w.Header().Set("Content-Type", contentType)
-	applyCacheHeaders(w, 3600, 60, "assets")
+	applyCacheHeaders(w, ttlFromConfig("asset_ttl"), "assets")
 	w.WriteHeader(fsthttp.StatusOK)
 	w.Write([]byte(body))
 }
@@ -57,7 +57,7 @@ func handleImage(w fsthttp.ResponseWriter, path string) {
 
 	slug := strings.SplitN(path, "/", 2)[0]
 	w.Header().Set("Content-Type", ct)
-	applyCacheHeaders(w, 3600, 60, "image-"+slug)
+	applyCacheHeaders(w, ttlFromConfig("image_ttl"), "image-"+slug)
 	w.WriteHeader(fsthttp.StatusOK)
 	w.Write([]byte(entry.String()))
 }

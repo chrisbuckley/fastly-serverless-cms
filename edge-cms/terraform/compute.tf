@@ -31,6 +31,12 @@ resource "fastly_service_compute" "app" {
     resource_id = fastly_secretstore.secrets.id
   }
 
+  # Config Store for cache TTLs — change values live without redeploying
+  resource_link {
+    name        = "cache_config"
+    resource_id = fastly_configstore.cache_config.id
+  }
+
   # Backend for Fastly Purge API calls — Compute makes HTTP requests here
   # when posts are created/updated/deleted to invalidate the CDN cache.
   backend {

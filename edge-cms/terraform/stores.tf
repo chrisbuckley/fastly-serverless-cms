@@ -21,6 +21,29 @@ resource "fastly_secretstore" "secrets" {
 }
 
 # ---------------------------------------------------------------------------
+# Config Store — cache TTLs (page_ttl, asset_ttl, image_ttl)
+#
+# Values are seconds. Change live without deploy via:
+#   fastly config-store-entry update --store-id=<id> --key=page_ttl --value=86400
+# ---------------------------------------------------------------------------
+
+resource "fastly_configstore" "cache_config" {
+  name          = "edge-cms-cache-config"
+  force_destroy = true
+}
+
+resource "fastly_configstore_entries" "cache_config" {
+  store_id       = fastly_configstore.cache_config.id
+  manage_entries = true
+
+  entries = {
+    page_ttl  = "2592000"
+    asset_ttl = "31536000"
+    image_ttl = "31536000"
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Fastly Object Storage — image bucket + access key
 # ---------------------------------------------------------------------------
 

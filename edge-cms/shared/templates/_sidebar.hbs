@@ -1,21 +1,16 @@
 <aside class="sidebar">
 
-  <!-- Categories -->
+  <!-- Tags -->
+  {{#if all_tags}}
   <div class="sidebar-block">
-    <h3 class="sidebar-heading">Categories</h3>
-    {{#each sidebar.items}}
-    {{#if (eq type "category")}}
-    <div class="sidebar-category">
-      <div class="sidebar-category-label">{{label}}</div>
-      <ul class="sidebar-category-posts">
-        {{#each children}}
-        <li><a href="/post/{{this}}">{{this}}</a></li>
-        {{/each}}
-      </ul>
+    <h3 class="sidebar-heading">Tags</h3>
+    <div class="sidebar-tags">
+      {{#each all_tags}}
+      <a href="/tag/{{this}}" class="sidebar-tag">{{this}}</a>
+      {{/each}}
     </div>
-    {{/if}}
-    {{/each}}
   </div>
+  {{/if}}
 
   <!-- Links -->
   <div class="sidebar-block">

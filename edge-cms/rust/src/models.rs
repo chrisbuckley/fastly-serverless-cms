@@ -52,6 +52,18 @@ impl PostIndex {
             .collect()
     }
 
+    pub fn all_tags(&self) -> Vec<String> {
+        let mut seen = std::collections::BTreeSet::new();
+        for p in &self.posts {
+            if p.status == PostStatus::Published {
+                for t in &p.tags {
+                    seen.insert(t.clone());
+                }
+            }
+        }
+        seen.into_iter().collect()
+    }
+
     pub fn add(&mut self, post: &Post) {
         self.posts.retain(|p| p.slug != post.slug);
         self.posts.insert(

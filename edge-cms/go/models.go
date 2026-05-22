@@ -1,6 +1,9 @@
 package main
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"sort"
+)
 
 // PostStatus represents the publication status of a post.
 type PostStatus string
@@ -66,6 +69,25 @@ func (idx *PostIndex) ByTag(tag string) []PostMeta {
 		}
 	}
 	return result
+}
+
+// AllTags returns sorted unique tags from published posts.
+func (idx *PostIndex) AllTags() []string {
+	seen := map[string]struct{}{}
+	for _, p := range idx.Posts {
+		if p.Status != StatusPublished {
+			continue
+		}
+		for _, t := range p.Tags {
+			seen[t] = struct{}{}
+		}
+	}
+	tags := make([]string, 0, len(seen))
+	for t := range seen {
+		tags = append(tags, t)
+	}
+	sort.Strings(tags)
+	return tags
 }
 
 // Add inserts a post's metadata at the front of the index, removing any

@@ -86,9 +86,12 @@ pub fn home(req: &Request) -> Result<Response, Error> {
 
     let published: Vec<_> = index.published().into_iter().cloned().collect();
 
+    let all_tags = index.all_tags();
+
     let data = json!({
         "posts": published,
         "sidebar": sidebar,
+        "all_tags": all_tags,
         "pop_city": pop_city,
         "pop_code": pop_code,
     });
@@ -98,7 +101,7 @@ pub fn home(req: &Request) -> Result<Response, Error> {
         .with_header("Content-Type", "text/html; charset=utf-8")
         .with_body(html);
 
-    Ok(CacheHeaders::reader(vec!["post-index", "sidebar"]).apply(resp))
+    Ok(CacheHeaders::page(vec!["post-index", "sidebar"]).apply(resp))
 }
 
 pub fn post(req: &Request, slug: &str) -> Result<Response, Error> {
@@ -121,7 +124,9 @@ pub fn post(req: &Request, slug: &str) -> Result<Response, Error> {
         return crate::error::not_found();
     }
 
+    let index = read_index()?;
     let sidebar = read_sidebar()?;
+    let all_tags = index.all_tags();
     let (pop_city, pop_code) = geo_context(req);
     let rendered_content = markdown::rewrite_images(&markdown::render_markdown(&post.content));
     let canonical_url = format!("/post/{}", slug);
@@ -145,6 +150,7 @@ pub fn post(req: &Request, slug: &str) -> Result<Response, Error> {
         "og_image": post.featured_image,
         "og_url": canonical_url,
         "sidebar": sidebar,
+        "all_tags": all_tags,
         "pop_city": pop_city,
         "pop_code": pop_code,
     });
@@ -155,7 +161,7 @@ pub fn post(req: &Request, slug: &str) -> Result<Response, Error> {
         .with_header("Content-Type", "text/html; charset=utf-8")
         .with_body(html);
 
-    Ok(CacheHeaders::reader(vec![&surrogate_key, "sidebar"]).apply(resp))
+    Ok(CacheHeaders::page(vec![&surrogate_key, "sidebar"]).apply(resp))
 }
 
 pub fn tag(req: &Request, tag_name: &str) -> Result<Response, Error> {
@@ -164,11 +170,13 @@ pub fn tag(req: &Request, tag_name: &str) -> Result<Response, Error> {
     let (pop_city, pop_code) = geo_context(req);
 
     let filtered: Vec<_> = index.by_tag(tag_name).into_iter().cloned().collect();
+    let all_tags = index.all_tags();
 
     let data = json!({
         "tag": tag_name,
         "posts": filtered,
         "sidebar": sidebar,
+        "all_tags": all_tags,
         "pop_city": pop_city,
         "pop_code": pop_code,
         "page_title": format!("Posts tagged \"{}\"", tag_name),
@@ -179,7 +187,7 @@ pub fn tag(req: &Request, tag_name: &str) -> Result<Response, Error> {
         .with_header("Content-Type", "text/html; charset=utf-8")
         .with_body(html);
 
-    Ok(CacheHeaders::reader(vec!["post-index", "sidebar"]).apply(resp))
+    Ok(CacheHeaders::page(vec!["post-index", "sidebar"]).apply(resp))
 }
 
 pub fn feed(_req: &Request) -> Result<Response, Error> {
@@ -219,7 +227,7 @@ pub fn feed(_req: &Request) -> Result<Response, Error> {
         .with_header("Content-Type", "application/rss+xml; charset=utf-8")
         .with_body(xml);
 
-    Ok(CacheHeaders::reader(vec!["post-index"]).apply(resp))
+    Ok(CacheHeaders::page(vec!["post-index"]).apply(resp))
 }
 
 pub fn sitemap(_req: &Request) -> Result<Response, Error> {
@@ -251,12 +259,13 @@ pub fn sitemap(_req: &Request) -> Result<Response, Error> {
         .with_header("Content-Type", "application/xml; charset=utf-8")
         .with_body(xml);
 
-    Ok(CacheHeaders::reader(vec!["post-index"]).apply(resp))
+    Ok(CacheHeaders::page(vec!["post-index"]).apply(resp))
 }
 
 pub fn robots() -> Result<Response, Error> {
     let body = "User-agent: *\nAllow: /\nSitemap: /sitemap.xml\n";
-    Ok(Response::from_status(StatusCode::OK)
+    let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "text/plain; charset=utf-8")
-        .with_body(body))
+        .with_body(body);
+    Ok(CacheHeaders::page(vec!["post-index"]).apply(resp))
 }

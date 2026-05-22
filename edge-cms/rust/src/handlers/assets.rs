@@ -14,7 +14,7 @@ pub fn static_file(path: &str) -> Result<Response, Error> {
     let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", content_type)
         .with_body(body.to_string());
-    Ok(CacheHeaders::reader(vec!["assets"]).apply(resp))
+    Ok(CacheHeaders::asset(vec!["assets"]).apply(resp))
 }
 
 pub fn image(_req: &Request, path: &str) -> Result<Response, Error> {
@@ -40,7 +40,7 @@ pub fn image(_req: &Request, path: &str) -> Result<Response, Error> {
             let resp = Response::from_status(StatusCode::OK)
                 .with_header("Content-Type", ct)
                 .with_body_octet_stream(&bytes);
-            Ok(CacheHeaders::reader(vec![&format!("image-{}", slug)]).apply(resp))
+            Ok(CacheHeaders::image(vec![&format!("image-{}", slug)]).apply(resp))
         }
         Err(KVStoreError::ItemNotFound) => {
             Ok(Response::from_status(StatusCode::NOT_FOUND).with_body("Image not found\n"))

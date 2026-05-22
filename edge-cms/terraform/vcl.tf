@@ -230,6 +230,21 @@ resource "fastly_service_vcl" "cdn" {
   }
 
   snippet {
+    name     = "images-cache"
+    type     = "fetch"
+    priority = 100
+    content  = <<-VCL
+      if (req.backend == F_edge_cms_fos) {
+        declare local var.image_ttl STRING;
+        set var.image_ttl = table.lookup(edge_cms_config, "image_ttl", "31536000");
+        set beresp.ttl = std.atoi(var.image_ttl);
+        set beresp.http.Cache-Control = "max-age=" + var.image_ttl + ", public";
+        set beresp.http.Surrogate-Key = "images";
+      }
+    VCL
+  }
+
+  snippet {
     name     = "images-deliver"
     type     = "deliver"
     priority = 100
@@ -306,6 +321,26 @@ resource "fastly_service_vcl" "cdn" {
     }
   }
 
+  gzip {
+    name = "compress-text"
+    content_types = [
+      "text/html",
+      "text/css",
+      "text/plain",
+      "text/xml",
+      "text/javascript",
+      "application/javascript",
+      "application/json",
+      "application/xml",
+      "application/rss+xml",
+      "application/atom+xml",
+      "image/svg+xml",
+    ]
+    extensions = [
+      "html", "htm", "css", "js", "json", "xml", "svg", "txt",
+    ]
+  }
+
   product_enablement {
     image_optimizer = true
   }
@@ -329,8 +364,10 @@ resource "fastly_service_dictionary_items" "rate_limit_uris" {
 resource "fastly_service_dictionary_items" "config" {
   service_id    = fastly_service_vcl.cdn.id
   dictionary_id = { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_config"]
+  manage_items  = true
 
   items = {
     "active_backend" = "rust"
+    "image_ttl"      = "31536000"
   }
 }

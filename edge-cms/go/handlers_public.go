@@ -105,6 +105,7 @@ func handleHome(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Reques
 	data := map[string]interface{}{
 		"posts":    index.Published(),
 		"sidebar":  sidebar,
+		"all_tags": index.AllTags(),
 		"pop_city": popCity,
 		"pop_code": popCode,
 	}
@@ -115,7 +116,7 @@ func handleHome(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Reques
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	applyCacheHeaders(w, 3600, 60, "post-index", "sidebar")
+	applyCacheHeaders(w, ttlFromConfig("page_ttl"), "post-index", "sidebar")
 	w.WriteHeader(fsthttp.StatusOK)
 	w.Write([]byte(html))
 }
@@ -141,6 +142,11 @@ func handlePost(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Reques
 		return
 	}
 
+	index, err := readIndex()
+	if err != nil {
+		handleInternalError(w)
+		return
+	}
 	sidebar, err := readSidebar()
 	if err != nil {
 		handleInternalError(w)
@@ -169,6 +175,7 @@ func handlePost(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Reques
 		"og_image":         post.FeaturedImage,
 		"og_url":           canonicalURL,
 		"sidebar":          sidebar,
+		"all_tags":         index.AllTags(),
 		"pop_city":         popCity,
 		"pop_code":         popCode,
 	}
@@ -179,7 +186,7 @@ func handlePost(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Reques
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	applyCacheHeaders(w, 3600, 60, "post-"+slug, "sidebar")
+	applyCacheHeaders(w, ttlFromConfig("page_ttl"), "post-"+slug, "sidebar")
 	w.WriteHeader(fsthttp.StatusOK)
 	w.Write([]byte(html))
 }
@@ -201,6 +208,7 @@ func handleTag(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request
 		"tag":        tagName,
 		"posts":      index.ByTag(tagName),
 		"sidebar":    sidebar,
+		"all_tags":   index.AllTags(),
 		"pop_city":   popCity,
 		"pop_code":   popCode,
 		"page_title": fmt.Sprintf("Posts tagged \"%s\"", tagName),
@@ -212,7 +220,7 @@ func handleTag(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	applyCacheHeaders(w, 3600, 60, "post-index", "sidebar")
+	applyCacheHeaders(w, ttlFromConfig("page_ttl"), "post-index", "sidebar")
 	w.WriteHeader(fsthttp.StatusOK)
 	w.Write([]byte(html))
 }
@@ -243,7 +251,7 @@ func handleFeed(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Reques
 	xml.WriteString("</channel>\n</rss>\n")
 
 	w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
-	applyCacheHeaders(w, 3600, 60, "post-index")
+	applyCacheHeaders(w, ttlFromConfig("page_ttl"), "post-index")
 	w.WriteHeader(fsthttp.StatusOK)
 	w.Write([]byte(xml.String()))
 }
@@ -268,13 +276,14 @@ func handleSitemap(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Req
 	xml.WriteString("</urlset>\n")
 
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
-	applyCacheHeaders(w, 3600, 60, "post-index")
+	applyCacheHeaders(w, ttlFromConfig("page_ttl"), "post-index")
 	w.WriteHeader(fsthttp.StatusOK)
 	w.Write([]byte(xml.String()))
 }
 
 func handleRobots(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	applyCacheHeaders(w, ttlFromConfig("page_ttl"), "post-index")
 	w.WriteHeader(fsthttp.StatusOK)
 	w.Write([]byte("User-agent: *\nAllow: /\nSitemap: /sitemap.xml\n"))
 }

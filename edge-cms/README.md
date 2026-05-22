@@ -10,6 +10,7 @@ Edge CMS demonstrates how Fastly's product suite composes into a real, deployabl
 |---------|---------|
 | **Compute** | Application runtime — all request logic runs at the edge in a Rust WASM binary |
 | **KV Store** | Post content, post index, and sidebar configuration |
+| **Config Store** | Cache TTL configuration — change page/asset/image TTLs live without redeploying |
 | **Object Store** | Image uploads (binary blobs), served via FOS |
 | **Secret Store** | Admin password (bcrypt hash), session HMAC key, FOS credentials, Fastly API token |
 | **VCL CDN Service** | Public CDN layer — caches reader responses, serves images directly from FOS, rate-limits login |
@@ -39,6 +40,7 @@ Browser
 │  • Routing, templating, auth        │
 │  • Reads/writes KV Store            │
 │  • Reads secrets from Secret Store  │
+│  • Reads TTLs from Config Store     │
 │  • Purges VCL cache on writes       │
 │  • Writes images to FOS             │
 └──────────────────────────────────────┘
@@ -195,7 +197,32 @@ fastly service-version activate \
   --service-id=$COMPUTE_SID --version=latest
 ```
 
-### Step 6 — Populate the Secret Store
+### Step 6 — Create and link the Config Store
+
+The Config Store holds cache TTLs that the Compute app reads at runtime. Values can be changed live without redeploying.
+
+```bash
+# Create the store
+fastly config-store create --name=edge-cms-cache-config
+export CSID=<config-store-id from output>
+
+# Populate cache TTLs (values in seconds)
+fastly config-store-entry create --store-id=$CSID --key=page_ttl --value=2592000    # 30 days
+fastly config-store-entry create --store-id=$CSID --key=asset_ttl --value=31536000   # 1 year
+fastly config-store-entry create --store-id=$CSID --key=image_ttl --value=31536000   # 1 year
+
+# Link to the Compute service
+fastly resource-link create \
+  --service-id=$COMPUTE_SID \
+  --version=latest --autoclone \
+  --resource-id=$CSID \
+  --name=cache_config
+
+fastly service-version activate \
+  --service-id=$COMPUTE_SID --version=latest
+```
+
+### Step 7 — Populate the Secret Store
 
 The Secret Store holds 8 keys. The Compute app will fail to start if any required secret is missing.
 
@@ -244,13 +271,13 @@ echo -n 'edge-cms-images' | fastly secret-store-entry create \
 | `admin_password` | bcrypt hash of your admin password | Generate with Python `bcrypt` |
 | `hmac_key` | Session cookie signing key | `openssl rand -base64 32` |
 | `fastly_api_token` | Token with purge scope on VCL service | Fastly account → API tokens |
-| `purge_service_id` | VCL CDN service ID | Output of Step 7 |
+| `purge_service_id` | VCL CDN service ID | Output of Step 8 |
 | `fos_access_key_id` | Object Storage access key ID | Output of Step 4 |
 | `fos_secret_key` | Object Storage secret key | Output of Step 4 (shown once) |
 | `fos_region` | Object Storage region | e.g. `us-east-1` |
 | `fos_bucket` | Object Storage bucket name | e.g. `edge-cms-images` |
 
-### Step 7 — Create the VCL CDN service
+### Step 8 — Create the VCL CDN service
 
 The VCL service is the public-facing CDN layer. It caches reader responses, serves images directly from Object Storage with SigV4 signing, and rate-limits login attempts.
 
@@ -302,9 +329,14 @@ fastly service-dictionary create \
   --service-id=$VCL_SID --version=latest --autoclone \
   --name=edge_cms_rate_limit_uris
 
+fastly service-dictionary create \
+  --service-id=$VCL_SID --version=latest --autoclone \
+  --name=edge_cms_config
+
 # Note the dictionary IDs from the output
 export FOS_DICT_ID=<edge_cms_fos_creds dictionary id>
 export RL_DICT_ID=<edge_cms_rate_limit_uris dictionary id>
+export CFG_DICT_ID=<edge_cms_config dictionary id>
 
 # Populate the FOS credentials dictionary
 fastly service-dictionary-item create \
@@ -319,6 +351,15 @@ fastly service-dictionary-item create \
 fastly service-dictionary-item create \
   --service-id=$VCL_SID --dictionary-id=$RL_DICT_ID \
   --key=/admin/login --value=1
+
+# Populate the config dictionary — image cache TTL (seconds)
+fastly service-dictionary-item create \
+  --service-id=$VCL_SID --dictionary-id=$CFG_DICT_ID \
+  --key=active_backend --value=rust
+
+fastly service-dictionary-item create \
+  --service-id=$VCL_SID --dictionary-id=$CFG_DICT_ID \
+  --key=image_ttl --value=31536000
 ```
 
 **Add VCL snippets** — these control request routing and image signing.
@@ -429,14 +470,14 @@ fastly products enable --service-id=$VCL_SID --product-id=image_optimizer
 fastly service-version activate --service-id=$VCL_SID --version=latest
 ```
 
-**Update the Compute service** with the VCL service ID in the Secret Store (go back to Step 6, `purge_service_id`):
+**Update the Compute service** with the VCL service ID in the Secret Store (go back to Step 7, `purge_service_id`):
 
 ```bash
 echo -n "$VCL_SID" | fastly secret-store-entry create \
   --store-id=$SSID --name=purge_service_id --stdin --recreate-allow
 ```
 
-### Step 8 — Seed the KV Store
+### Step 9 — Seed the KV Store
 
 Initialize the content KV store with empty index and sidebar structures:
 
@@ -454,7 +495,7 @@ fastly kv-store-entry create \
   --value='{"items":[]}'
 ```
 
-### Step 9 — Configure DNS
+### Step 10 — Configure DNS
 
 Add two CNAME records in your DNS provider:
 
@@ -463,7 +504,7 @@ Add two CNAME records in your DNS provider:
 | `your-domain.com` | CNAME | `j.sni.global.fastly.net` |
 | `app.your-domain.com` | CNAME | `j.sni.global.fastly.net` |
 
-### Step 10 — Provision TLS
+### Step 11 — Provision TLS
 
 ```bash
 # Provision Let's Encrypt certificates for both domains
@@ -481,9 +522,9 @@ fastly tls-subscription list
 
 Each subscription will show one or more `_acme-challenge.*` CNAME records. Add these to your DNS provider — Fastly validates them to issue the certificate. Certificates are usually issued within a few minutes.
 
-### Step 11 — First login
+### Step 12 — First login
 
-Visit `https://your-domain.com/admin/login` and sign in with the admin password you set in Step 6.
+Visit `https://your-domain.com/admin/login` and sign in with the admin password you set in Step 7.
 
 ---
 
@@ -549,10 +590,12 @@ terraform apply tfplan
 ```
 
 Terraform creates:
-- VCL CDN service with backends, dictionaries, VCL snippets, rate limiter, and Image Optimizer
-- Compute service with KV Store and Secret Store resource links, and backends for the Fastly API and Object Storage
+- VCL CDN service with backends, dictionaries, VCL snippets, rate limiter, compression, and Image Optimizer
+- Compute service with KV Store, Secret Store, and Config Store resource links, and backends for the Fastly API and Object Storage
 - KV Store (`edge-cms-content`)
+- Config Store (`edge-cms-cache-config`) — pre-populated with cache TTLs (`page_ttl`, `asset_ttl`, `image_ttl`)
 - Secret Store (`edge-cms-secrets`) — created empty; populate in the next step
+- Edge Dictionary (`edge_cms_config`) — pre-populated with `active_backend` and `image_ttl`
 - Object Storage access key pair
 
 After apply, note the outputs — you'll need them for the next steps:
@@ -687,6 +730,8 @@ Certificates are issued once Fastly verifies the `_acme-challenge.*` DNS records
 
 Visit `https://your-domain.com/admin/login` and sign in with the admin password you set in Step 4.
 
+> **Note:** The Config Store and `edge_cms_config` dictionary are fully managed by Terraform. To change cache TTLs, update the values in `stores.tf` and `vcl.tf` and run `terraform apply`, or update them live via the CLI (see "Changing TTLs Live" in the Caching Strategy section).
+
 ---
 
 ## Sensitive Files Reference
@@ -721,6 +766,7 @@ This starts a local server at `http://127.0.0.1:7676` with test data pre-loaded 
 |------|---------|
 | `tests/kv-content.json` | Sample post, index, and sidebar config |
 | `tests/kv-images.json` | Empty image store placeholder |
+| `tests/cache-config.json` | Cache TTLs for local dev (matches production Config Store) |
 | `tests/secrets.json` | Test admin password hash and HMAC key |
 
 ### Integration Tests
@@ -740,24 +786,49 @@ This exercises all reader routes, cache headers, JSON-LD structured data, and ad
 | Store | Type | Key | Value |
 |-------|------|-----|-------|
 | `content` | KV | `_index` | JSON array of post metadata (used for listing pages) |
-| `content` | KV | `_sidebar` | JSON sidebar config (categories + links) |
+| `content` | KV | `_sidebar` | JSON sidebar config (tags + links) |
 | `content` | KV | `post:<slug>` | Full post JSON (title, content, tags, dates, featured image URL) |
 | `images` | FOS bucket | `<slug>/<filename>` | Raw image bytes (written by Compute, served by VCL via FOS) |
+| `cache_config` | Config Store | `page_ttl`, `asset_ttl`, `image_ttl` | Cache TTLs in seconds (read by Compute) |
+| `edge_cms_config` | Edge Dictionary | `active_backend`, `image_ttl` | Backend selector + VCL image cache TTL |
 | `secrets` | Secret Store | 8 keys | See secret reference table above |
 
 ---
 
 ## Caching Strategy
 
-Reader routes (`/`, `/post/<slug>`, `/tag/<tag>`, `/feed.xml`, etc.) are cached by the VCL CDN service:
+All cache TTLs are configurable at runtime — no code deploy required. Compute reads from a **Config Store** (`cache_config`), and VCL image caching reads from the **`edge_cms_config` Edge Dictionary**.
 
-- `Surrogate-Control: max-age=3600` — Fastly edge cache holds for 1 hour
-- `Cache-Control: max-age=60, public` — browser cache holds for 1 minute
-- `Surrogate-Key: <slug> posts` — enables targeted purging per post
+### TTL Tiers
 
-On any admin write (create, update, or delete), Compute calls the Fastly Purge API with the relevant surrogate key, instantly invalidating only the affected cached responses.
+| Content | Edge + Browser TTL | Source | Surrogate Keys |
+|---------|-------------------|--------|----------------|
+| **Pages** (home, post, tag, feed, sitemap, robots) | 30 days (`2592000`) | Config Store: `page_ttl` | `post-index`, `post-<slug>`, `sidebar` |
+| **CSS/JS** | 1 year (`31536000`) | Config Store: `asset_ttl` | `assets` |
+| **Images** (via VCL → Object Storage) | 1 year (`31536000`) | Edge Dictionary: `image_ttl` | `images` |
+| **Admin** (`/admin/*`) | No cache | `private, no-store` + VCL `return(pass)` | — |
 
-Admin routes (`/admin/*`) bypass the cache entirely via the `admin-pass` VCL snippet.
+### Changing TTLs Live
+
+```bash
+# Pages — takes effect on next cache miss (or purge first for immediate effect)
+fastly config-store-entry update \
+  --store-id=<cache-config-store-id> --key=page_ttl --value=86400
+
+# Images — Edge Dictionary, takes effect immediately on next miss
+fastly service dictionary-entry update \
+  --service-id=<vcl-service-id> \
+  --dictionary-id=<edge_cms_config-dict-id> \
+  --key=image_ttl --value=86400
+```
+
+### Purging
+
+On any admin write (create, update, or delete), Compute calls the Fastly Purge API with the relevant surrogate key, instantly invalidating only the affected cached responses. With aggressive TTLs, purging is the primary cache invalidation mechanism.
+
+### Compression
+
+The VCL CDN service applies **brotli** (with gzip fallback) to all text-based responses: HTML, CSS, JS, JSON, XML, and SVG. Images are excluded — they are already compressed by format. Fastly auto-negotiates the encoding based on `Accept-Encoding`.
 
 ---
 
@@ -782,7 +853,7 @@ edge-cms/
     ├── variables.tf        # Variable definitions
     ├── terraform.tfvars.example  # Variable template (copy to terraform.tfvars)
     ├── compute.tf          # Compute service
-    ├── stores.tf           # KV Store, Secret Store, Object Storage access keys
+    ├── stores.tf           # KV Store, Secret Store, Config Store, Object Storage access keys
     ├── vcl.tf              # VCL CDN service with snippets, rate limiter, dictionaries
     ├── tls.tf              # TLS provisioning notes and commented resources
     └── outputs.tf          # IDs, credentials, post-apply checklist

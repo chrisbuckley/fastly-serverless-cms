@@ -1,27 +1,44 @@
+use fastly::config_store::ConfigStore;
 use fastly::secret_store::SecretStore;
 use fastly::{Request, Response};
 
+fn ttl_from_config(key: &str) -> u32 {
+    ConfigStore::open("cache_config")
+        .get(key)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3600)
+}
+
 pub struct CacheHeaders {
     pub surrogate_keys: Vec<String>,
-    pub edge_ttl: u32,
-    pub browser_ttl: u32,
+    pub ttl: u32,
 }
 
 impl CacheHeaders {
-    pub fn reader(keys: Vec<&str>) -> Self {
+    pub fn page(keys: Vec<&str>) -> Self {
         Self {
             surrogate_keys: keys.into_iter().map(String::from).collect(),
-            edge_ttl: 3600,
-            browser_ttl: 60,
+            ttl: ttl_from_config("page_ttl"),
+        }
+    }
+
+    pub fn asset(keys: Vec<&str>) -> Self {
+        Self {
+            surrogate_keys: keys.into_iter().map(String::from).collect(),
+            ttl: ttl_from_config("asset_ttl"),
+        }
+    }
+
+    pub fn image(keys: Vec<&str>) -> Self {
+        Self {
+            surrogate_keys: keys.into_iter().map(String::from).collect(),
+            ttl: ttl_from_config("image_ttl"),
         }
     }
 
     pub fn apply(self, mut resp: Response) -> Response {
-        resp.set_header("Surrogate-Control", format!("max-age={}", self.edge_ttl));
-        resp.set_header(
-            "Cache-Control",
-            format!("max-age={}, public", self.browser_ttl),
-        );
+        resp.set_header("Surrogate-Control", format!("max-age={}", self.ttl));
+        resp.set_header("Cache-Control", format!("max-age={}, public", self.ttl));
         if !self.surrogate_keys.is_empty() {
             resp.set_header("Surrogate-Key", self.surrogate_keys.join(" "));
         }

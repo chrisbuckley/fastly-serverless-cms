@@ -95,8 +95,8 @@ jobs:
 
       - name: Install Fastly CLI
         run: |
-          wget -q "https://github.com/fastly/cli/releases/latest/download/fastly_linux-amd64.deb" -O /tmp/fastly.deb
-          sudo dpkg -i /tmp/fastly.deb
+          curl -1sLf 'https://dl.cloudsmith.io/public/fastly/cli/setup.deb.sh' | sudo bash
+          sudo apt-get install -y fastly
 
       - name: Build Compute package
         run: fastly compute build

@@ -18,6 +18,7 @@ fn main(req: Request) -> Result<Response, Error> {
     let path = req.get_path().to_string();
 
     let result = match router::match_route(&method, &path) {
+        router::Route::EdgeInfo => handlers::public::edge_info(&req),
         router::Route::Home => handlers::public::home(&req),
         router::Route::Post { slug } => handlers::public::post(&req, &slug),
         router::Route::Tag { tag } => handlers::public::tag(&req, &tag),
@@ -41,10 +42,7 @@ fn main(req: Request) -> Result<Response, Error> {
         router::Route::NotFound => error::not_found(),
     };
 
-    // Structured request logging.
-    // In local dev (Viceroy), eprintln! output goes to stderr for debugging.
-    // In production, replace with fastly::log::Endpoint for real-time log
-    // streaming to an external drain (e.g., BigQuery, S3, Datadog).
+    // All eprintln! output is streamed via `fastly log-tail --service-id <compute-sid>`.
     let resp_result = match result {
         Ok(resp) => {
             let timestamp = SystemTime::now()
@@ -61,7 +59,7 @@ fn main(req: Request) -> Result<Response, Error> {
             Ok(resp)
         }
         Err(e) => {
-            eprintln!("error: {} {} - {}", method, path, e);
+            eprintln!("[error] {} {} — {:#}", method, path, e);
             error::internal_error()
         }
     };

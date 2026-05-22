@@ -1,4 +1,5 @@
 pub enum Route {
+    EdgeInfo,
     Home,
     Post { slug: String },
     Tag { tag: String },
@@ -24,6 +25,7 @@ pub enum Route {
 
 pub fn match_route(method: &str, path: &str) -> Route {
     match (method, path) {
+        ("GET", "/api/edge-info") => Route::EdgeInfo,
         ("GET", "/") => Route::Home,
         ("GET", "/feed.xml") => Route::Feed,
         ("GET", "/sitemap.xml") => Route::Sitemap,
@@ -262,6 +264,7 @@ mod tests {
             Route::AdminSidebar => "AdminSidebar",
             Route::AdminUpdateSidebar => "AdminUpdateSidebar",
             Route::AdminLogout => "AdminLogout",
+            Route::EdgeInfo => "EdgeInfo",
             Route::NotFound => "NotFound",
         }
     }

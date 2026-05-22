@@ -34,9 +34,6 @@ resource "fastly_service_vcl" "cdn" {
     # Compute responses carry Surrogate-Control; respect them.
     first_byte_timeout    = 30000
     between_bytes_timeout = 10000
-
-    # IO requires shielding on ALL backends in the service.
-    shield = var.shield_pop
   }
 
   # ---------------------------------------------------------------------------

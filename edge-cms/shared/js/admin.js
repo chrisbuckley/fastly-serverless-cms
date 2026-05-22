@@ -544,6 +544,31 @@
 
     // Initial filter pass (in case the page loads with filters pre-set)
     filterAndRender();
+
+    // Edge stats: TTFB from Navigation Timing, POP from /api/edge-info
+    (function () {
+      var entries = performance.getEntriesByType('navigation');
+      if (entries.length) {
+        var el = document.getElementById('admin-edge-ttfb');
+        if (el) el.textContent = Math.round(entries[0].responseStart) + 'ms';
+      }
+      fetch('/api/edge-info', { cache: 'no-store' })
+        .then(function (resp) {
+          var servedBy = resp.headers.get('x-served-by') || '';
+          var pop = '';
+          if (servedBy) {
+            var last = servedBy.split(',').pop().trim();
+            var m = last.match(/([A-Z]{3})$/);
+            if (m) pop = m[1];
+          }
+          return resp.json().then(function (data) { return pop || data.pop || '—'; });
+        })
+        .then(function (pop) {
+          var el = document.getElementById('admin-edge-pop');
+          if (el) el.textContent = pop;
+        })
+        .catch(function () {});
+    }());
   }
 
   // ===========================================================

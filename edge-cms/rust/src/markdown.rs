@@ -53,8 +53,8 @@ fn responsive_picture(src: &str, alt: &str) -> String {
             r#"srcset="{src}?width=480&format=webp 480w, "#,
             r#"{src}?width=800&format=webp 800w, "#,
             r#"{src}?width=1280&format=webp 1280w" "#,
-            r#"sizes="(max-width: 640px) 100vw, 800px">"#,
-            r#"<img alt="{alt}" src="{src}?width=800" loading="lazy">"#,
+            r#"sizes="(max-width: 640px) 100vw, 680px">"#,
+            r#"<img alt="{alt}" src="{src}?width=680" loading="lazy">"#,
             "</picture>",
         ),
         src = src,
@@ -125,8 +125,8 @@ mod tests {
             "should have 1280w srcset entry"
         );
         assert!(
-            out.contains(r#"src="/images/post/photo.jpg?width=800""#),
-            "fallback img should have width=800"
+            out.contains(r#"src="/images/post/photo.jpg?width=680""#),
+            "fallback img should have width=680"
         );
         assert!(out.contains(r#"alt="A photo""#), "alt text preserved");
         assert!(out.contains("loading=\"lazy\""), "lazy loading set");

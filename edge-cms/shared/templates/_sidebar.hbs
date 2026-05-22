@@ -51,11 +51,11 @@
     <p>This entire CMS runs on Fastly Compute. No origin servers. Content stored in KV Store, images in Object Store, all served from the nearest POP.</p>
     <div class="edge-badge-stats">
       <div class="edge-stat">
-        <span class="edge-stat-value">{{edge_ttfb}}ms</span>
+        <span class="edge-stat-value" id="edge-stat-ttfb">—</span>
         <span class="edge-stat-label">TTFB</span>
       </div>
       <div class="edge-stat">
-        <span class="edge-stat-value">{{pop_code}}</span>
+        <span class="edge-stat-value" id="edge-stat-pop">—</span>
         <span class="edge-stat-label">POP</span>
       </div>
       <div class="edge-stat">
@@ -66,3 +66,55 @@
   </div>
 
 </aside>
+
+<script>
+(function () {
+  function set(id, text) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = text;
+  }
+
+  // TTFB measured from Navigation Timing API on the main page request.
+  // responseStart = ms since navigation began when the first byte arrived.
+  function updateTtfb() {
+    var entries = performance.getEntriesByType('navigation');
+    if (entries.length) {
+      set('edge-stat-ttfb', Math.round(entries[0].responseStart) + 'ms');
+    }
+  }
+
+  // POP — fetch /api/edge-info (Cache-Control: no-store, hits Compute fresh
+  // every time) and read X-Served-By. That header lists Fastly cache nodes
+  // in order; the 3-letter uppercase suffix on the last entry is the VCL
+  // edge POP currently serving this user. Falls back to FASTLY_POP env var
+  // returned in the JSON body (Compute execution POP).
+  function updatePop() {
+    fetch('/api/edge-info', { cache: 'no-store' })
+      .then(function (resp) {
+        var servedBy = resp.headers.get('x-served-by') || '';
+        var pop = '';
+        if (servedBy) {
+          var last = servedBy.split(',').pop().trim();
+          var m = last.match(/([A-Z]{3})$/);
+          if (m) pop = m[1];
+        }
+        return resp.json().then(function (data) {
+          return pop || data.pop || '—';
+        });
+      })
+      .then(function (pop) {
+        set('edge-stat-pop', pop);
+        var f = document.getElementById('footer-pop');
+        if (f) f.textContent = pop;
+      })
+      .catch(function () {});
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function () { updateTtfb(); updatePop(); });
+  } else {
+    updateTtfb();
+    updatePop();
+  }
+}());
+</script>

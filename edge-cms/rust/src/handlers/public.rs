@@ -32,6 +32,18 @@ pub(crate) fn read_sidebar() -> Result<SidebarConfig, Error> {
     }
 }
 
+/// Real-time edge info — returns the Compute POP and nothing else.
+/// Responds with Cache-Control: no-store so the VCL CDN never caches it.
+/// Client JS reads the VCL edge POP from the X-Served-By response header.
+pub fn edge_info(_req: &Request) -> Result<Response, Error> {
+    let pop = std::env::var("FASTLY_POP").unwrap_or_else(|_| "local".to_string());
+    Ok(Response::from_status(StatusCode::OK)
+        .with_header("Content-Type", "application/json")
+        .with_header("Cache-Control", "no-store")
+        .with_header("Surrogate-Control", "no-store")
+        .with_body(json!({ "pop": pop }).to_string()))
+}
+
 /// Extract city and POP code from the client's IP via Fastly geo lookup.
 fn geo_context(req: &Request) -> (String, String) {
     req.get_client_ip_addr()

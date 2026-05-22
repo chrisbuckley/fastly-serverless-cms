@@ -781,6 +781,25 @@ This exercises all reader routes, cache headers, JSON-LD structured data, and ad
 
 ---
 
+## CI / GitHub Actions
+
+Pull requests targeting `main` that touch `edge-cms/**` trigger the `edge-cms CI` workflow (`.github/workflows/edge-cms-ci.yml`). Six jobs run in parallel (except integration tests, which wait for Rust checks):
+
+| Job | What it checks |
+|-----|---------------|
+| **Rust** | `cargo fmt --check`, `cargo clippy --target wasm32-wasip1`, `cargo test` (40 unit tests) |
+| **Go** | `go vet`, `go test` (43 unit tests) |
+| **Terraform** | `terraform fmt -check`, `terraform validate` |
+| **Integration** | Builds Compute package, starts [Viceroy](https://github.com/fastly/Viceroy) via [`fastly/compute-actions/setup`](https://github.com/fastly/compute-actions), runs HTTP integration tests (15 assertions covering reader routes, cache headers, admin auth) |
+| **VCL** | `falco fmt --check`, `falco lint` on any `.vcl` files (skips gracefully when VCL is inline in Terraform) |
+| **Secrets** | `detect-secrets scan` against baseline to prevent accidental credential commits |
+
+The integration test job uses [Fastly's official Compute GitHub Actions](https://github.com/fastly/compute-actions) (`fastly/compute-actions/setup@v6`) to install the Fastly CLI and Viceroy runtime. This builds the Rust Compute package, starts a local Viceroy instance, and runs `tests/integration.sh` — the same test suite used in local development.
+
+Stale CI runs are automatically cancelled when new commits are pushed to the same PR branch.
+
+---
+
 ## Data Model
 
 | Store | Type | Key | Value |
@@ -838,6 +857,8 @@ The VCL CDN service applies **brotli** (with gzip fallback) to all text-based re
 edge-cms/
 ├── README.md
 ├── DESIGN.md              # Full design document
+├── ../.github/workflows/  # GitHub Actions CI
+│   └── edge-cms-ci.yml    # PR checks: Rust, Go, Terraform, Viceroy, VCL, secrets
 ├── shared/                # Shared across all language implementations
 │   ├── templates/         # Handlebars templates (.hbs)
 │   ├── css/               # Stylesheet

@@ -104,7 +104,7 @@ jobs:
 
       - name: Install falco
         run: |
-          curl -sL "https://github.com/ysugimoto/falco/releases/latest/download/falco_linux_amd64.tar.gz" | sudo tar xz -C /usr/local/bin falco
+          curl -sL "https://github.com/ysugimoto/falco/releases/latest/download/falco-linux-amd64.tar.gz" | sudo tar xz -C /usr/local/bin --strip-components=0
 
       - name: Check for VCL files
         id: vcl-files

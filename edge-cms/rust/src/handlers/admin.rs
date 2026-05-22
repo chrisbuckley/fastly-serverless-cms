@@ -56,19 +56,19 @@ fn parse_form_body(body: &str) -> HashMap<String, String> {
 
 fn url_decode(s: &str) -> String {
     let s = s.replace('+', " ");
-    let mut result = String::new();
+    let mut bytes: Vec<u8> = Vec::with_capacity(s.len());
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
         if c == '%' {
             let hex: String = chars.by_ref().take(2).collect();
             if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                result.push(byte as char);
+                bytes.push(byte);
             }
         } else {
-            result.push(c);
+            bytes.extend_from_slice(c.to_string().as_bytes());
         }
     }
-    result
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Generate a simple ISO 8601 timestamp from the current system time.

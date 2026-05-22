@@ -8,10 +8,11 @@ output "compute_service_id" {
   value       = fastly_service_compute.app.id
 }
 
-output "compute_go_service_id" {
-  description = "Compute app service ID (Go)"
-  value       = fastly_service_compute.app_go.id
-}
+# Uncomment when Go Compute service is managed by Terraform
+# output "compute_go_service_id" {
+#   description = "Compute app service ID (Go)"
+#   value       = fastly_service_compute.app_go.id
+# }
 
 output "content_kv_store_id" {
   description = "KV Store ID for post content, index, sidebar"
@@ -94,7 +95,7 @@ output "next_steps" {
     IDs (copy these — used in every command below):
       VCL service:    ${fastly_service_vcl.cdn.id}
       Compute (Rust): ${fastly_service_compute.app.id}
-      Compute (Go):   ${fastly_service_compute.app_go.id}
+      Compute (Go):   (managed via CLI — see compute.tf)
       KV Store:       ${fastly_kvstore.content.id}
       Secret Store:   ${fastly_secretstore.secrets.id}
       FOS key ID:     ${fastly_object_storage_access_keys.fos.access_key_id}

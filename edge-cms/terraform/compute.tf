@@ -76,62 +76,65 @@ resource "fastly_service_compute" "app" {
 # Domain: app-go.<domain> — needs a CNAME to Fastly (see outputs).
 # ---------------------------------------------------------------------------
 
-resource "fastly_service_compute" "app_go" {
-  name    = "edge-cms-app-go"
-  comment = "Edge CMS Compute backend (Go) — managed by Terraform"
-
-  domain {
-    name    = "app-go.${var.domain}"
-    comment = "Internal domain — VCL CDN service uses this as a backend"
-  }
-
-  package {
-    filename         = var.compute_go_package_path
-    source_code_hash = filesha512(var.compute_go_package_path)
-  }
-
-  resource_link {
-    name        = "content"
-    resource_id = fastly_kvstore.content.id
-  }
-
-  resource_link {
-    name        = "secrets"
-    resource_id = fastly_secretstore.secrets.id
-  }
-
-  backend {
-    name              = "fastly-api"
-    address           = "api.fastly.com"
-    port              = 443
-    use_ssl           = true
-    ssl_cert_hostname = "api.fastly.com"
-    ssl_sni_hostname  = "api.fastly.com"
-  }
-
-  backend {
-    name              = "fastly-object-storage"
-    address           = "${var.fos_region}.object.fastlystorage.app"
-    port              = 443
-    use_ssl           = true
-    ssl_cert_hostname = "${var.fos_region}.object.fastlystorage.app"
-    ssl_sni_hostname  = "${var.fos_region}.object.fastlystorage.app"
-  }
-
-  dynamic "logging_https" {
-    for_each = var.logging_endpoint_url != "" ? [1] : []
-    content {
-      name              = "edge-cms-app-go-logs"
-      url               = var.logging_endpoint_url
-      method            = "POST"
-      content_type      = "application/json"
-      header_name       = "Authorization"
-      header_value      = "Bearer ${var.logging_token}"
-      message_type      = "blank"
-      request_max_bytes = 0
-      json_format       = "2"
-    }
-  }
-
-  force_destroy = true
-}
+# Commented out until Fastly Package API 500 is resolved.
+# Uncomment and run: terraform import fastly_service_compute.app_go <service-id>
+#
+# resource "fastly_service_compute" "app_go" {
+#   name    = "edge-cms-app-go"
+#   comment = "Edge CMS Compute backend (Go) — managed by Terraform"
+#
+#   domain {
+#     name    = "app-go.${var.domain}"
+#     comment = "Internal domain — VCL CDN service uses this as a backend"
+#   }
+#
+#   package {
+#     filename         = var.compute_go_package_path
+#     source_code_hash = filesha512(var.compute_go_package_path)
+#   }
+#
+#   resource_link {
+#     name        = "content"
+#     resource_id = fastly_kvstore.content.id
+#   }
+#
+#   resource_link {
+#     name        = "secrets"
+#     resource_id = fastly_secretstore.secrets.id
+#   }
+#
+#   backend {
+#     name              = "fastly-api"
+#     address           = "api.fastly.com"
+#     port              = 443
+#     use_ssl           = true
+#     ssl_cert_hostname = "api.fastly.com"
+#     ssl_sni_hostname  = "api.fastly.com"
+#   }
+#
+#   backend {
+#     name              = "fastly-object-storage"
+#     address           = "${var.fos_region}.object.fastlystorage.app"
+#     port              = 443
+#     use_ssl           = true
+#     ssl_cert_hostname = "${var.fos_region}.object.fastlystorage.app"
+#     ssl_sni_hostname  = "${var.fos_region}.object.fastlystorage.app"
+#   }
+#
+#   dynamic "logging_https" {
+#     for_each = var.logging_endpoint_url != "" ? [1] : []
+#     content {
+#       name              = "edge-cms-app-go-logs"
+#       url               = var.logging_endpoint_url
+#       method            = "POST"
+#       content_type      = "application/json"
+#       header_name       = "Authorization"
+#       header_value      = "Bearer ${var.logging_token}"
+#       message_type      = "blank"
+#       request_max_bytes = 0
+#       json_format       = "2"
+#     }
+#   }
+#
+#   force_destroy = true
+# }

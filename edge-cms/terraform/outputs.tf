@@ -51,33 +51,30 @@ output "config_dict_id" {
 }
 
 output "squarespace_dns_routing_cnames" {
-  description = "Add these CNAME records in Squarespace DNS"
+  description = "Add these CNAME records in Squarespace DNS — wildcard covers all subdomains"
   value = {
-    "${var.domain}."        = "CNAME  j.sni.global.fastly.net"
-    "app.${var.domain}."    = "CNAME  j.sni.global.fastly.net"
-    "app-go.${var.domain}." = "CNAME  j.sni.global.fastly.net"
+    "${var.domain}."   = "CNAME  j.sni.global.fastly.net"
+    "*.${var.domain}." = "CNAME  j.sni.global.fastly.net"
   }
 }
 
 # ---------------------------------------------------------------------------
-# TLS — must be provisioned via main account (automation account lacks TLS)
+# TLS — wildcard cert, provisioned via main account (automation account lacks TLS)
 # ---------------------------------------------------------------------------
 
 output "tls_provisioning_commands" {
-  description = "Run these with your MAIN account token to provision Let's Encrypt certs"
+  description = "Run with your MAIN account token to provision a wildcard Let's Encrypt cert"
   value       = <<-EOT
     MAIN_TOKEN="<your-main-fastly-api-token>"
 
+    # Single wildcard subscription covers ${var.domain} + *.${var.domain}
+    # (app, app-go, app-ts, any future subdomains — no new certs needed)
     FASTLY_API_TOKEN=$MAIN_TOKEN fastly tls-subscription create \
-      --domain=${var.domain} --cert-authority=lets-encrypt
+      --domain=${var.domain} \
+      --domain=*.${var.domain} \
+      --cert-authority=lets-encrypt
 
-    FASTLY_API_TOKEN=$MAIN_TOKEN fastly tls-subscription create \
-      --domain=app.${var.domain} --cert-authority=lets-encrypt
-
-    FASTLY_API_TOKEN=$MAIN_TOKEN fastly tls-subscription create \
-      --domain=app-go.${var.domain} --cert-authority=lets-encrypt
-
-    # Then check for DNS validation records to add in Squarespace:
+    # Check for DNS validation records to add:
     FASTLY_API_TOKEN=$MAIN_TOKEN fastly tls-subscription list
   EOT
 }
@@ -106,14 +103,13 @@ output "next_steps" {
 
     ── DNS (Squarespace) ────────────────────────────────────────────────────
 
-    Routing CNAMEs (see squarespace_dns_routing_cnames output):
+    Routing CNAMEs (wildcard covers all subdomains):
       ${var.domain}           →  j.sni.global.fastly.net
-      app.${var.domain}       →  j.sni.global.fastly.net
-      app-go.${var.domain}    →  j.sni.global.fastly.net
+      *.${var.domain}         →  j.sni.global.fastly.net
 
-    TLS validation CNAMEs — after running tls_provisioning_commands:
-      terraform output tls_provisioning_commands   # shows CLI commands
-      # then: fastly tls-subscription list         # shows CNAME records to add
+    TLS: single wildcard cert covers ${var.domain} + *.${var.domain}
+      terraform output tls_provisioning_commands   # shows CLI command
+      # then: fastly tls-subscription list         # shows validation CNAME to add
 
     ── Secrets ─────────────────────────────────────────────────────────────
 

@@ -1,40 +1,22 @@
 # ---------------------------------------------------------------------------
-# TLS — managed Let's Encrypt certificates
+# TLS — wildcard Let's Encrypt certificate
 #
-# The automation account (edge-cms-4txyztf83hfif92sir2jzd) does not have TLS
-# provisioning enabled (403 from Fastly API). TLS must be configured on the
-# main account that owns chrisbuckley.dev.
+# One subscription covers var.domain + *.var.domain (app, app-go, app-ts, etc.)
+# No new certs needed when adding language implementations.
 #
-# After terraform apply, provision TLS from the Fastly control panel or via
-# the CLI using your main account credentials:
+# The automation account may not have TLS provisioning enabled (403).
+# If so, provision via CLI with your main account token — see
+# tls_provisioning_commands output.
 #
-#   # Public domain
-#   FASTLY_API_TOKEN=<main-account-token> \
-#     fastly tls-subscription create \
-#       --domain=serverless-cms.chrisbuckley.dev \
-#       --cert-authority=lets-encrypt
+# After creation, `fastly tls-subscription list` shows DNS validation
+# CNAME records to add. See outputs for routing CNAMEs.
 #
-#   # Internal app domain
-#   FASTLY_API_TOKEN=<main-account-token> \
-#     fastly tls-subscription create \
-#       --domain=app.serverless-cms.chrisbuckley.dev \
-#       --cert-authority=lets-encrypt
+# To bring TLS into Terraform once enabled on the automation account,
+# uncomment and run terraform import:
 #
-# After creation, fastly tls-subscription list shows the DNS validation
-# CNAME records to add in Squarespace. See outputs for routing CNAMEs.
-#
-# To bring TLS into Terraform once TLS is enabled on the automation account,
-# uncomment the resources below and run terraform import:
-#
-# resource "fastly_tls_subscription" "public" {
-#   domains               = [var.domain]
+# resource "fastly_tls_subscription" "wildcard" {
+#   domains               = [var.domain, "*.${var.domain}"]
 #   certificate_authority = "lets-encrypt"
-#   depends_on            = [fastly_service_vcl.cdn]
-# }
-#
-# resource "fastly_tls_subscription" "app_internal" {
-#   domains               = ["app.${var.domain}"]
-#   certificate_authority = "lets-encrypt"
-#   depends_on            = [fastly_service_compute.app]
+#   depends_on            = [fastly_service_vcl.cdn, fastly_service_compute.app]
 # }
 # ---------------------------------------------------------------------------

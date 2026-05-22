@@ -1,0 +1,850 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Edge CMS — Reader Mockup</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,600;0,9..144,700;0,9..144,800;1,9..144,400&family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #f5f0e8;
+      --bg-card: #fffdf9;
+      --text: #2a2520;
+      --text-muted: #7a7068;
+      --text-light: #a89e94;
+      --accent: #1b6b52;
+      --accent-hover: #14503e;
+      --accent-light: #e8f3ef;
+      --terracotta: #c4593a;
+      --terracotta-light: #fdf0ec;
+      --gold: #b8a47e;
+      --gold-light: #f5f0e5;
+      --border: #e5ddd3;
+      --border-light: #ede7de;
+      --shadow: rgba(42, 37, 32, 0.06);
+      --shadow-md: rgba(42, 37, 32, 0.1);
+      --font-display: 'Fraunces', serif;
+      --font-body: 'DM Sans', sans-serif;
+      --max-width: 1180px;
+      --header-height: 72px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html {
+      font-size: 16px;
+      scroll-behavior: smooth;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    body {
+      font-family: var(--font-body);
+      color: var(--text);
+      background: var(--bg);
+      line-height: 1.7;
+      min-height: 100vh;
+    }
+
+    /* --- Noise texture overlay --- */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      opacity: 0.025;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 9999;
+    }
+
+    /* --- Header --- */
+    .site-header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(12px);
+      background: rgba(245, 240, 232, 0.92);
+    }
+
+    .header-inner {
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 0 2rem;
+      height: var(--header-height);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .site-title {
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 1.5rem;
+      color: var(--text);
+      text-decoration: none;
+      letter-spacing: -0.02em;
+      font-variation-settings: 'opsz' 36;
+    }
+
+    .site-title span {
+      color: var(--accent);
+    }
+
+    .header-nav {
+      display: flex;
+      gap: 2rem;
+      align-items: center;
+    }
+
+    .header-nav a {
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: color 0.2s;
+      letter-spacing: 0.02em;
+    }
+
+    .header-nav a:hover { color: var(--accent); }
+
+    .header-nav .nav-rss {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    .header-nav .nav-rss svg {
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
+    }
+
+    /* --- Main layout --- */
+    .main-layout {
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 2.5rem 2rem 4rem;
+      display: grid;
+      grid-template-columns: 1fr 320px;
+      gap: 3.5rem;
+      align-items: start;
+    }
+
+    /* --- Post cards --- */
+    .posts-feed { display: flex; flex-direction: column; gap: 2rem; }
+
+    .post-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-light);
+      border-radius: 8px;
+      overflow: hidden;
+      transition: box-shadow 0.3s ease, transform 0.2s ease;
+      animation: fadeUp 0.5s ease both;
+    }
+
+    .post-card:nth-child(2) { animation-delay: 0.08s; }
+    .post-card:nth-child(3) { animation-delay: 0.16s; }
+    .post-card:nth-child(4) { animation-delay: 0.24s; }
+
+    .post-card:hover {
+      box-shadow: 0 8px 30px var(--shadow), 0 2px 8px var(--shadow);
+      transform: translateY(-2px);
+    }
+
+    .post-card-featured {
+      position: relative;
+      overflow: hidden;
+    }
+
+    .post-card-featured img {
+      width: 100%;
+      height: 220px;
+      object-fit: cover;
+      display: block;
+      transition: transform 0.4s ease;
+    }
+
+    .post-card:hover .post-card-featured img {
+      transform: scale(1.03);
+    }
+
+    .post-card-body {
+      padding: 1.75rem 2rem 2rem;
+    }
+
+    .post-card-meta {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+      font-size: 0.8rem;
+      color: var(--text-light);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-weight: 500;
+    }
+
+    .post-card-meta .dot {
+      width: 3px;
+      height: 3px;
+      border-radius: 50%;
+      background: var(--text-light);
+      flex-shrink: 0;
+    }
+
+    .post-card-title {
+      font-family: var(--font-display);
+      font-size: 1.65rem;
+      font-weight: 700;
+      line-height: 1.25;
+      margin-bottom: 0.75rem;
+      letter-spacing: -0.02em;
+      font-variation-settings: 'opsz' 28;
+    }
+
+    .post-card-title a {
+      color: inherit;
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    .post-card-title a:hover { color: var(--accent); }
+
+    .post-card-excerpt {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      line-height: 1.7;
+      margin-bottom: 1.25rem;
+    }
+
+    .post-card-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .post-tags {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .tag {
+      font-size: 0.72rem;
+      font-weight: 500;
+      padding: 0.25rem 0.65rem;
+      border-radius: 100px;
+      text-decoration: none;
+      letter-spacing: 0.03em;
+      transition: all 0.2s;
+    }
+
+    .tag-accent {
+      background: var(--accent-light);
+      color: var(--accent);
+    }
+
+    .tag-accent:hover {
+      background: var(--accent);
+      color: white;
+    }
+
+    .tag-terracotta {
+      background: var(--terracotta-light);
+      color: var(--terracotta);
+    }
+
+    .tag-terracotta:hover {
+      background: var(--terracotta);
+      color: white;
+    }
+
+    .tag-gold {
+      background: var(--gold-light);
+      color: #8a7650;
+    }
+
+    .tag-gold:hover {
+      background: var(--gold);
+      color: white;
+    }
+
+    .read-more {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--accent);
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      transition: gap 0.2s;
+      flex-shrink: 0;
+    }
+
+    .read-more:hover { gap: 0.6rem; }
+
+    .read-more svg {
+      width: 14px;
+      height: 14px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    /* --- Sidebar --- */
+    .sidebar {
+      position: sticky;
+      top: calc(var(--header-height) + 2.5rem);
+      display: flex;
+      flex-direction: column;
+      gap: 1.75rem;
+      animation: fadeUp 0.5s ease 0.1s both;
+    }
+
+    .sidebar-block {
+      background: var(--bg-card);
+      border: 1px solid var(--border-light);
+      border-radius: 8px;
+      padding: 1.5rem;
+    }
+
+    .sidebar-heading {
+      font-family: var(--font-display);
+      font-size: 0.85rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      margin-bottom: 1rem;
+      padding-bottom: 0.65rem;
+      border-bottom: 2px solid var(--accent);
+      display: inline-block;
+      font-variation-settings: 'opsz' 14;
+    }
+
+    .sidebar-category {
+      margin-bottom: 1.25rem;
+    }
+
+    .sidebar-category:last-child { margin-bottom: 0; }
+
+    .sidebar-category-label {
+      font-weight: 600;
+      font-size: 0.9rem;
+      color: var(--text);
+      margin-bottom: 0.4rem;
+    }
+
+    .sidebar-category-posts {
+      list-style: none;
+      padding-left: 0;
+    }
+
+    .sidebar-category-posts li {
+      padding: 0.3rem 0;
+    }
+
+    .sidebar-category-posts a {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: color 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .sidebar-category-posts a::before {
+      content: '';
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: var(--border);
+      flex-shrink: 0;
+      transition: background 0.2s;
+    }
+
+    .sidebar-category-posts a:hover {
+      color: var(--accent);
+    }
+
+    .sidebar-category-posts a:hover::before {
+      background: var(--accent);
+    }
+
+    .sidebar-links {
+      list-style: none;
+      padding: 0;
+    }
+
+    .sidebar-links li {
+      padding: 0.4rem 0;
+      border-bottom: 1px solid var(--border-light);
+    }
+
+    .sidebar-links li:last-child { border-bottom: none; }
+
+    .sidebar-links a {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      transition: color 0.2s;
+    }
+
+    .sidebar-links a:hover { color: var(--accent); }
+
+    .sidebar-links svg {
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
+      opacity: 0.5;
+    }
+
+    /* --- Edge badge --- */
+    .edge-badge {
+      background: linear-gradient(135deg, var(--accent), #247a63);
+      color: white;
+      border-radius: 8px;
+      padding: 1.25rem 1.5rem;
+      font-size: 0.78rem;
+      line-height: 1.5;
+      border: none;
+    }
+
+    .edge-badge-title {
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 0.95rem;
+      margin-bottom: 0.35rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .edge-badge-title svg {
+      width: 16px;
+      height: 16px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+    }
+
+    .edge-badge p {
+      opacity: 0.85;
+    }
+
+    .edge-badge-stats {
+      display: flex;
+      gap: 1.5rem;
+      margin-top: 0.75rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid rgba(255,255,255,0.2);
+    }
+
+    .edge-stat {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .edge-stat-value {
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 1.1rem;
+    }
+
+    .edge-stat-label {
+      font-size: 0.7rem;
+      opacity: 0.7;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    /* --- Footer --- */
+    .site-footer {
+      border-top: 1px solid var(--border);
+      background: var(--bg-card);
+    }
+
+    .footer-inner {
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.8rem;
+      color: var(--text-light);
+    }
+
+    .footer-edge {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.78rem;
+      color: var(--text-light);
+    }
+
+    .footer-edge .pop-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #4ade80;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 1.5rem;
+    }
+
+    .footer-links a {
+      color: var(--text-light);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    .footer-links a:hover { color: var(--accent); }
+
+    /* --- Pagination --- */
+    .pagination {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 1rem;
+    }
+
+    .pagination a, .pagination span {
+      width: 36px;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      text-decoration: none;
+      color: var(--text-muted);
+      transition: all 0.2s;
+    }
+
+    .pagination a:hover {
+      background: var(--accent-light);
+      color: var(--accent);
+    }
+
+    .pagination .current {
+      background: var(--accent);
+      color: white;
+    }
+
+    .pagination .prev, .pagination .next {
+      width: auto;
+      padding: 0 0.75rem;
+      font-size: 0.8rem;
+    }
+
+    /* --- Animations --- */
+    @keyframes fadeUp {
+      from {
+        opacity: 0;
+        transform: translateY(16px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* --- Responsive --- */
+    @media (max-width: 900px) {
+      .main-layout {
+        grid-template-columns: 1fr;
+        gap: 2.5rem;
+        padding: 1.5rem 1.25rem 3rem;
+      }
+
+      .sidebar {
+        position: static;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+      }
+
+      .edge-badge { grid-column: 1 / -1; }
+
+      .post-card-title { font-size: 1.35rem; }
+      .post-card-body { padding: 1.25rem 1.5rem 1.5rem; }
+    }
+
+    @media (max-width: 600px) {
+      .header-nav { gap: 1rem; }
+      .sidebar { grid-template-columns: 1fr; }
+      .post-card-featured img { height: 180px; }
+      .footer-inner { flex-direction: column; gap: 1rem; text-align: center; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="site-header">
+    <div class="header-inner">
+      <a href="/" class="site-title">edge<span>/</span>cms</a>
+      <nav class="header-nav">
+        <a href="/">Home</a>
+        <a href="/tag/fastly">Fastly</a>
+        <a href="/tag/edge">Edge</a>
+        <a href="/feed.xml" class="nav-rss">
+          <svg viewBox="0 0 24 24"><circle cx="6.18" cy="17.82" r="2.18"/><path d="M4 4.44A15.56 15.56 0 0 1 19.56 20"/><path d="M4 11.22A8.78 8.78 0 0 1 12.78 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          RSS
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- Main content -->
+  <main class="main-layout">
+
+    <!-- Posts feed -->
+    <section class="posts-feed">
+
+      <!-- Featured post with image -->
+      <article class="post-card">
+        <div class="post-card-featured">
+          <img src="https://images.unsplash.com/photo-1558494949-ef010cbdcc31?w=800&h=400&fit=crop&auto=format" alt="Server room with blue lighting">
+        </div>
+        <div class="post-card-body">
+          <div class="post-card-meta">
+            <span>May 18, 2026</span>
+            <span class="dot"></span>
+            <span>8 min read</span>
+          </div>
+          <h2 class="post-card-title">
+            <a href="/post/building-a-cms-at-the-edge">Building a CMS That Runs Entirely at the Edge</a>
+          </h2>
+          <p class="post-card-excerpt">
+            What happens when you take every component of a content management system and push it to the edge? No origin servers, no centralized database, no cold starts. Just your content, delivered from the nearest point of presence in milliseconds.
+          </p>
+          <div class="post-card-footer">
+            <div class="post-tags">
+              <a href="/tag/fastly" class="tag tag-accent">fastly</a>
+              <a href="/tag/edge" class="tag tag-terracotta">edge compute</a>
+              <a href="/tag/architecture" class="tag tag-gold">architecture</a>
+            </div>
+            <a href="/post/building-a-cms-at-the-edge" class="read-more">
+              Read
+              <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </a>
+          </div>
+        </div>
+      </article>
+
+      <!-- Post without image -->
+      <article class="post-card">
+        <div class="post-card-body">
+          <div class="post-card-meta">
+            <span>May 15, 2026</span>
+            <span class="dot"></span>
+            <span>5 min read</span>
+          </div>
+          <h2 class="post-card-title">
+            <a href="/post/kv-store-patterns">KV Store Patterns for Content-Heavy Applications</a>
+          </h2>
+          <p class="post-card-excerpt">
+            Fastly's KV Store isn't just a key-value database — it's a globally distributed content layer. Here's how we structured our data model with a denormalized index pattern that serves listing pages with a single read.
+          </p>
+          <div class="post-card-footer">
+            <div class="post-tags">
+              <a href="/tag/kv-store" class="tag tag-accent">kv store</a>
+              <a href="/tag/data-model" class="tag tag-gold">data model</a>
+            </div>
+            <a href="/post/kv-store-patterns" class="read-more">
+              Read
+              <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </a>
+          </div>
+        </div>
+      </article>
+
+      <!-- Post with image -->
+      <article class="post-card">
+        <div class="post-card-featured">
+          <img src="https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=800&h=400&fit=crop&auto=format" alt="Matrix code on screen">
+        </div>
+        <div class="post-card-body">
+          <div class="post-card-meta">
+            <span>May 10, 2026</span>
+            <span class="dot"></span>
+            <span>6 min read</span>
+          </div>
+          <h2 class="post-card-title">
+            <a href="/post/surrogate-keys-explained">Surrogate Keys: Surgical Cache Invalidation at Scale</a>
+          </h2>
+          <p class="post-card-excerpt">
+            When an admin updates a post, exactly one cache entry gets purged — not the entire site. Surrogate keys give you the granularity of cache-busting query strings with none of the drawbacks. Here's the pattern.
+          </p>
+          <div class="post-card-footer">
+            <div class="post-tags">
+              <a href="/tag/caching" class="tag tag-terracotta">caching</a>
+              <a href="/tag/fastly" class="tag tag-accent">fastly</a>
+            </div>
+            <a href="/post/surrogate-keys-explained" class="read-more">
+              Read
+              <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </a>
+          </div>
+        </div>
+      </article>
+
+      <!-- Post without image -->
+      <article class="post-card">
+        <div class="post-card-body">
+          <div class="post-card-meta">
+            <span>May 6, 2026</span>
+            <span class="dot"></span>
+            <span>4 min read</span>
+          </div>
+          <h2 class="post-card-title">
+            <a href="/post/image-optimizer-deep-dive">Responsive Images Without a Build Step</a>
+          </h2>
+          <p class="post-card-excerpt">
+            Upload once, serve everywhere. Fastly Image Optimizer transforms images on the fly — resize, reformat to WebP or AVIF, adjust quality — all via query parameters. No image pipeline needed.
+          </p>
+          <div class="post-card-footer">
+            <div class="post-tags">
+              <a href="/tag/images" class="tag tag-gold">images</a>
+              <a href="/tag/performance" class="tag tag-terracotta">performance</a>
+            </div>
+            <a href="/post/image-optimizer-deep-dive" class="read-more">
+              Read
+              <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </a>
+          </div>
+        </div>
+      </article>
+
+      <!-- Pagination -->
+      <nav class="pagination">
+        <span class="current">1</span>
+        <a href="/page/2">2</a>
+        <a href="/page/3">3</a>
+        <a href="/page/2" class="next">Next &rarr;</a>
+      </nav>
+
+    </section>
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+
+      <!-- Categories -->
+      <div class="sidebar-block">
+        <h3 class="sidebar-heading">Categories</h3>
+
+        <div class="sidebar-category">
+          <div class="sidebar-category-label">Getting Started</div>
+          <ul class="sidebar-category-posts">
+            <li><a href="/post/building-a-cms-at-the-edge">Building a CMS at the Edge</a></li>
+            <li><a href="/post/kv-store-patterns">KV Store Patterns</a></li>
+          </ul>
+        </div>
+
+        <div class="sidebar-category">
+          <div class="sidebar-category-label">Caching &amp; Performance</div>
+          <ul class="sidebar-category-posts">
+            <li><a href="/post/surrogate-keys-explained">Surrogate Keys Explained</a></li>
+            <li><a href="/post/image-optimizer-deep-dive">Responsive Images</a></li>
+          </ul>
+        </div>
+
+        <div class="sidebar-category">
+          <div class="sidebar-category-label">Security</div>
+          <ul class="sidebar-category-posts">
+            <li><a href="/post/edge-auth-patterns">Auth at the Edge</a></li>
+            <li><a href="/post/rate-limiting-login">Rate Limiting Login</a></li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Links -->
+      <div class="sidebar-block">
+        <h3 class="sidebar-heading">Links</h3>
+        <ul class="sidebar-links">
+          <li>
+            <a href="https://github.com">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.02 10.02 0 0 0 22 12.017C22 6.484 17.522 2 12 2z"/></svg>
+              GitHub Repository
+            </a>
+          </li>
+          <li>
+            <a href="https://docs.fastly.com">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+              Fastly Documentation
+            </a>
+          </li>
+          <li>
+            <a href="https://developer.fastly.com">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+              Developer Hub
+            </a>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Edge badge -->
+      <div class="edge-badge">
+        <div class="edge-badge-title">
+          <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          Powered by Fastly Edge
+        </div>
+        <p>This entire CMS runs on Fastly Compute. No origin servers. Content stored in KV Store, images in Object Store, all served from the nearest POP.</p>
+        <div class="edge-badge-stats">
+          <div class="edge-stat">
+            <span class="edge-stat-value">12ms</span>
+            <span class="edge-stat-label">TTFB</span>
+          </div>
+          <div class="edge-stat">
+            <span class="edge-stat-value">EWR</span>
+            <span class="edge-stat-label">POP</span>
+          </div>
+          <div class="edge-stat">
+            <span class="edge-stat-value">3</span>
+            <span class="edge-stat-label">Languages</span>
+          </div>
+        </div>
+      </div>
+
+    </aside>
+  </main>
+
+  <!-- Footer -->
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-edge">
+        <span class="pop-dot"></span>
+        Served from Fastly's Newark (EWR) edge &mdash; 12ms
+      </div>
+      <div class="footer-links">
+        <a href="/sitemap.xml">Sitemap</a>
+        <a href="/feed.xml">RSS Feed</a>
+        <a href="https://github.com">Source Code</a>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>

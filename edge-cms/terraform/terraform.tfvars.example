@@ -1,0 +1,20 @@
+# Copy this file to terraform.tfvars and fill in real values.
+# terraform.tfvars is gitignored — never commit real values.
+
+fastly_api_token     = "your-fastly-api-token-here"
+domain               = "edge-cms.example.com"
+compute_package_path = "../rust/pkg/edge-cms.tar.gz"
+
+# Fastly Object Storage region — us-east-1, eu-central-1, ap-southeast-1, etc.
+fos_region = "us-east-1"
+
+# Name of the Object Storage bucket to create for images
+fos_bucket = "edge-cms-images"
+
+# Fastly POP for origin shielding on the Compute backend
+# Find codes at: https://developer.fastly.com/reference/api/utils/pops/
+shield_pop = "iad-va-us"
+
+# Optional: HTTPS log drain
+# logging_endpoint_url = "https://your-log-drain.example.com/logs"
+# logging_token        = "your-logging-auth-token"

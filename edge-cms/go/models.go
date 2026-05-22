@@ -3,7 +3,25 @@ package main
 import (
 	"encoding/json"
 	"sort"
+	"strings"
 )
+
+func firstContentImage(content string) string {
+	start := strings.Index(content, "![")
+	if start < 0 {
+		return ""
+	}
+	paren := strings.Index(content[start:], "(")
+	if paren < 0 {
+		return ""
+	}
+	urlStart := start + paren + 1
+	end := strings.Index(content[urlStart:], ")")
+	if end < 0 {
+		return ""
+	}
+	return content[urlStart : urlStart+end]
+}
 
 // PostStatus represents the publication status of a post.
 type PostStatus string
@@ -94,6 +112,12 @@ func (idx *PostIndex) AllTags() []string {
 // existing entry with the same slug first.
 func (idx *PostIndex) Add(post *Post) {
 	idx.Remove(post.Slug)
+	image := post.FeaturedImage
+	if image == nil {
+		if url := firstContentImage(post.Content); url != "" {
+			image = &url
+		}
+	}
 	meta := PostMeta{
 		Slug:          post.Slug,
 		Title:         post.Title,
@@ -101,7 +125,7 @@ func (idx *PostIndex) Add(post *Post) {
 		Status:        post.Status,
 		CreatedAt:     post.CreatedAt,
 		Tags:          post.Tags,
-		FeaturedImage: post.FeaturedImage,
+		FeaturedImage: image,
 	}
 	idx.Posts = append([]PostMeta{meta}, idx.Posts...)
 }

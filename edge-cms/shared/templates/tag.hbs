@@ -5,9 +5,15 @@
   {{#each posts}}
   <article class="post-card">
     {{#if featured_image}}
-    <div class="post-card-featured">
-      <img src="{{featured_image}}?width=800&format=webp" alt="{{title}}">
-    </div>
+    <a href="/post/{{slug}}" class="post-card-featured">
+      <picture>
+        <source type="image/webp"
+          srcset="{{featured_image}}?width=480&height=220&fit=cover&format=webp 480w,
+                  {{featured_image}}?width=800&height=220&fit=cover&format=webp 800w"
+          sizes="(max-width: 640px) 100vw, 680px">
+        <img src="{{featured_image}}?width=800&height=220&fit=cover" alt="{{title}}" loading="lazy">
+      </picture>
+    </a>
     {{/if}}
     <div class="post-card-body">
       <div class="post-card-meta">

@@ -1,5 +1,13 @@
 use serde::{Deserialize, Serialize};
 
+fn first_content_image(content: &str) -> Option<String> {
+    let start = content.find("![")?;
+    let paren = content[start..].find('(')?;
+    let url_start = start + paren + 1;
+    let url_end = url_start + content[url_start..].find(')')?;
+    Some(content[url_start..url_end].to_string())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum PostStatus {
@@ -66,6 +74,10 @@ impl PostIndex {
 
     pub fn add(&mut self, post: &Post) {
         self.posts.retain(|p| p.slug != post.slug);
+        let image = post
+            .featured_image
+            .clone()
+            .or_else(|| first_content_image(&post.content));
         self.posts.insert(
             0,
             PostMeta {
@@ -75,7 +87,7 @@ impl PostIndex {
                 status: post.status.clone(),
                 created_at: post.created_at.clone(),
                 tags: post.tags.clone(),
-                featured_image: post.featured_image.clone(),
+                featured_image: image,
             },
         );
     }

@@ -228,6 +228,8 @@ body::before {
 .post-card-featured {
   position: relative;
   overflow: hidden;
+  text-decoration: none;
+  display: block;
 }
 
 .post-card-featured img {

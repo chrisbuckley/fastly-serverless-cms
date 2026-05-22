@@ -82,6 +82,8 @@ jobs:
 
       - uses: fastly/compute-actions/setup@v6
 
+      - run: rustup target add wasm32-wasip1
+
       - name: Build Compute package
         run: fastly compute build
 

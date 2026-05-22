@@ -80,23 +80,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-wasip1
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            edge-cms/rust/target
-          key: rust-${{ hashFiles('edge-cms/rust/Cargo.lock') }}
-          restore-keys: rust-
-
-      - name: Install Fastly CLI
-        run: |
-          curl -1sLf 'https://dl.cloudsmith.io/public/fastly/cli/setup.deb.sh' | sudo bash
-          sudo apt-get install -y fastly
+      - uses: fastly/compute-actions/setup@v6
 
       - name: Build Compute package
         run: fastly compute build

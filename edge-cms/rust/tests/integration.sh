@@ -74,7 +74,7 @@ check "Unknown asset returns 404" \
 # Cache headers on reader responses
 # ---------------------------------------------------------------------------
 
-HEADERS=$(curl -sI "$BASE/")
+HEADERS=$(curl -s -D- -o /dev/null "$BASE/")
 if echo "$HEADERS" | grep -qi "surrogate-control"; then
     echo "PASS: Surrogate-Control header present"
     PASS=$((PASS + 1))
@@ -112,7 +112,7 @@ check "Login page returns 200" \
     "$BASE/admin/login" "200" "password"
 
 # Admin dashboard should redirect to login without auth cookie
-ADMIN_STATUS=$(curl -o /dev/null -s -w "%{http_code}" -L --max-redirs 0 "$BASE/admin")
+ADMIN_STATUS=$(curl -o /dev/null -s -w "%{http_code}" --max-redirs 0 "$BASE/admin")
 if [ "$ADMIN_STATUS" = "302" ]; then
     echo "PASS: Admin dashboard redirects without auth"
     PASS=$((PASS + 1))
@@ -125,7 +125,7 @@ fi
 # Admin cache headers — should never be cached
 # ---------------------------------------------------------------------------
 
-LOGIN_HEADERS=$(curl -sI "$BASE/admin/login")
+LOGIN_HEADERS=$(curl -s -D- -o /dev/null "$BASE/admin/login")
 if echo "$LOGIN_HEADERS" | grep -qi "no-store"; then
     echo "PASS: Admin login has no-store cache header"
     PASS=$((PASS + 1))

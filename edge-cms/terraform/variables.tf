@@ -10,9 +10,15 @@ variable "domain" {
 }
 
 variable "compute_package_path" {
-  description = "Path to the built Compute package — run `fastly compute build` in rust/ first"
+  description = "Path to the Rust Compute package — run `fastly compute build` in rust/ first"
   type        = string
   default     = "../rust/pkg/edge-cms.tar.gz"
+}
+
+variable "compute_go_package_path" {
+  description = "Path to the Go Compute package — run `make build` in go/ first"
+  type        = string
+  default     = "../go/pkg/edge-cms-go.tar.gz"
 }
 
 variable "fos_region" {

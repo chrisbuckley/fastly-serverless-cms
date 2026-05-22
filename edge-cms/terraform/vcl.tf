@@ -19,8 +19,9 @@ resource "fastly_service_vcl" "cdn" {
   }
 
   # ---------------------------------------------------------------------------
-  # Backend: Compute app service
-  # Default for all non-image requests.
+  # Backends: Compute app services (one per language implementation)
+  # The active backend is selected by the edge_cms_config dictionary.
+  # Default: Rust. Switch with: fastly dictionary-item update --key=active_backend --value=go
   # ---------------------------------------------------------------------------
   backend {
     name              = "edge-cms-compute"
@@ -31,7 +32,19 @@ resource "fastly_service_vcl" "cdn" {
     ssl_sni_hostname  = "app.${var.domain}"
     override_host     = "app.${var.domain}"
 
-    # Compute responses carry Surrogate-Control; respect them.
+    first_byte_timeout    = 30000
+    between_bytes_timeout = 10000
+  }
+
+  backend {
+    name              = "edge-cms-compute-go"
+    address           = "app-go.${var.domain}"
+    port              = 443
+    use_ssl           = true
+    ssl_cert_hostname = "app-go.${var.domain}"
+    ssl_sni_hostname  = "app-go.${var.domain}"
+    override_host     = "app-go.${var.domain}"
+
     first_byte_timeout    = 30000
     between_bytes_timeout = 10000
   }
@@ -73,6 +86,12 @@ resource "fastly_service_vcl" "cdn" {
     name = "edge_cms_rate_limit_uris"
   }
 
+  # Backend selector — set active_backend to "rust" (default), "go", or "ts".
+  # Switch live without deploy: fastly dictionary-item update ...
+  dictionary {
+    name = "edge_cms_config"
+  }
+
   # ---------------------------------------------------------------------------
   # VCL snippet: route /images/* to Object Storage with SigV4 signing
   #
@@ -83,12 +102,27 @@ resource "fastly_service_vcl" "cdn" {
   # ---------------------------------------------------------------------------
 
   snippet {
+    name     = "backend-select"
+    type     = "recv"
+    priority = 10
+    content  = <<-VCL
+      declare local var.active STRING;
+      set var.active = table.lookup(edge_cms_config, "active_backend", "rust");
+
+      if (var.active == "go") {
+        set req.backend = F_edge_cms_compute_go;
+      } else {
+        set req.backend = F_edge_cms_compute;
+      }
+    VCL
+  }
+
+  snippet {
     name     = "admin-pass"
     type     = "recv"
     priority = 50
     content  = <<-VCL
       if (req.url.path ~ "^/admin") {
-        set req.backend = F_edge_cms_compute;
         return(pass);
       }
     VCL
@@ -289,5 +323,14 @@ resource "fastly_service_dictionary_items" "rate_limit_uris" {
 
   items = {
     "/admin/login" = "1"
+  }
+}
+
+resource "fastly_service_dictionary_items" "config" {
+  service_id    = fastly_service_vcl.cdn.id
+  dictionary_id = { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_config"]
+
+  items = {
+    "active_backend" = "rust"
   }
 }

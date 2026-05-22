@@ -4,8 +4,13 @@ output "vcl_service_id" {
 }
 
 output "compute_service_id" {
-  description = "Compute app service ID"
+  description = "Compute app service ID (Rust)"
   value       = fastly_service_compute.app.id
+}
+
+output "compute_go_service_id" {
+  description = "Compute app service ID (Go)"
+  value       = fastly_service_compute.app_go.id
 }
 
 output "content_kv_store_id" {
@@ -40,11 +45,17 @@ output "fos_dict_id" {
 # j.sni.global.fastly.net is the correct SNI endpoint for TLS subscriptions.
 # ---------------------------------------------------------------------------
 
+output "config_dict_id" {
+  description = "Config dictionary ID — set active_backend to rust/go/ts"
+  value       = { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_config"]
+}
+
 output "squarespace_dns_routing_cnames" {
-  description = "Add these two CNAME records in Squarespace DNS"
+  description = "Add these CNAME records in Squarespace DNS"
   value = {
-    "${var.domain}."     = "CNAME  j.sni.global.fastly.net"
-    "app.${var.domain}." = "CNAME  j.sni.global.fastly.net"
+    "${var.domain}."        = "CNAME  j.sni.global.fastly.net"
+    "app.${var.domain}."    = "CNAME  j.sni.global.fastly.net"
+    "app-go.${var.domain}." = "CNAME  j.sni.global.fastly.net"
   }
 }
 
@@ -62,6 +73,9 @@ output "tls_provisioning_commands" {
 
     FASTLY_API_TOKEN=$MAIN_TOKEN fastly tls-subscription create \
       --domain=app.${var.domain} --cert-authority=lets-encrypt
+
+    FASTLY_API_TOKEN=$MAIN_TOKEN fastly tls-subscription create \
+      --domain=app-go.${var.domain} --cert-authority=lets-encrypt
 
     # Then check for DNS validation records to add in Squarespace:
     FASTLY_API_TOKEN=$MAIN_TOKEN fastly tls-subscription list
@@ -82,17 +96,20 @@ output "next_steps" {
 
     IDs (copy these — used in every command below):
       VCL service:    ${fastly_service_vcl.cdn.id}
-      Compute svc:    ${fastly_service_compute.app.id}
+      Compute (Rust): ${fastly_service_compute.app.id}
+      Compute (Go):   ${fastly_service_compute.app_go.id}
       KV Store:       ${fastly_kvstore.content.id}
       Secret Store:   ${fastly_secretstore.secrets.id}
       FOS key ID:     ${fastly_object_storage_access_keys.fos.access_key_id}
       FOS dict:       ${ { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_fos_creds"]}
+      Config dict:    ${ { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_config"]}
 
     ── DNS (Squarespace) ────────────────────────────────────────────────────
 
     Routing CNAMEs (see squarespace_dns_routing_cnames output):
-      ${var.domain}        →  j.sni.global.fastly.net
-      app.${var.domain}    →  j.sni.global.fastly.net
+      ${var.domain}           →  j.sni.global.fastly.net
+      app.${var.domain}       →  j.sni.global.fastly.net
+      app-go.${var.domain}    →  j.sni.global.fastly.net
 
     TLS validation CNAMEs — after running tls_provisioning_commands:
       terraform output tls_provisioning_commands   # shows CLI commands
@@ -137,6 +154,22 @@ output "next_steps" {
     KVID="${fastly_kvstore.content.id}"
     fastly kv-store-entry create --store-id=$KVID --key=_index   --value='{"posts":[]}'
     fastly kv-store-entry create --store-id=$KVID --key=_sidebar --value='{"items":[]}'
+
+    ── Backend switching ───────────────────────────────────────────────
+
+    CONFIG_DICT="${ { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_config"]}"
+
+    # Set initial backend (default is Rust if key missing):
+    fastly service-dictionary-item create --service-id=$VCL_SID --dictionary-id=$CONFIG_DICT \
+      --key=active_backend --value=rust
+
+    # Switch to Go (no deploy needed — takes effect immediately):
+    fastly service-dictionary-item update --service-id=$VCL_SID --dictionary-id=$CONFIG_DICT \
+      --key=active_backend --value=go
+
+    # Switch back to Rust:
+    fastly service-dictionary-item update --service-id=$VCL_SID --dictionary-id=$CONFIG_DICT \
+      --key=active_backend --value=rust
 
     ── NGWAF (optional) ────────────────────────────────────────────────────
 

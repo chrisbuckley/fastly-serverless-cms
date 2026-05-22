@@ -1,5 +1,7 @@
 github.com/aymerick/raymond v2.0.2+incompatible h1:VEp3GpgdAnv9B2GFyTvqgcKvY+mfKMjPOA3SbKLtnU0=
 github.com/aymerick/raymond v2.0.2+incompatible/go.mod h1:osfaiScAUVup+UC9Nfq76eWqDhXlp+4UYaA8uhTBO6g=
+github.com/fastly/compute-sdk-go v1.7.0 h1:UepbapZSB3Y1lMMVxwHYDHsvhQMeCW9vDAx4qjKWDuA=
+github.com/fastly/compute-sdk-go v1.7.0/go.mod h1:lpMbU4uglYjfPpKFpibAwAl9xCM9s8NKpYxAEj5DTXM=
 github.com/yuin/goldmark v1.7.8 h1:iERMLn0/QJeHFhxSt3p6PeN9mGnvIKSpG9YYorDMnic=
 github.com/yuin/goldmark v1.7.8/go.mod h1:uzxRWxtg69N339t3louHJ7+O03ezfj6PlliRlaOzY1E=
 golang.org/x/crypto v0.31.0 h1:ihbySMvVjLAeSH1IbfcRTkD/iNscyz8rGzjF/E5hV6U=

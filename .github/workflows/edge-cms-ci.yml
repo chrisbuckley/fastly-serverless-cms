@@ -157,6 +157,36 @@ jobs:
           done
           ./tests/integration.sh
 
+  integration-tests-go:
+    name: Integration — Go (Viceroy)
+    needs: [changes, go-checks]
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: edge-cms/go
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: fastly/compute-actions/setup@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: edge-cms/go/go.sum
+
+      - name: Build Compute package
+        run: make build
+
+      - name: Start Viceroy and run tests
+        run: |
+          fastly compute serve &
+          for i in $(seq 1 30); do
+            curl -s http://127.0.0.1:7676/ > /dev/null 2>&1 && break
+            sleep 1
+          done
+          ../rust/tests/integration.sh
+
   integration-tests-typescript:
     name: Integration — TypeScript (Viceroy)
     needs: [changes, typescript-checks]

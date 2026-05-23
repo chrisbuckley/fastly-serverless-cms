@@ -83,17 +83,10 @@ repos:
       #   language: system
       #   files: \.go$
 
-      # ── TypeScript (future) ───────────────────────────────────────────────
-      # - id: ts-check
-      #   name: tsc --noEmit
-      #   entry: bash -c 'cd <example-dir> && npx tsc --noEmit'
-      #   language: system
-      #   files: ^<example-dir>/.*\.ts$
-      #   pass_filenames: false
-      #
-      # - id: ts-fmt
-      #   name: prettier --check
-      #   entry: bash -c 'cd <example-dir> && npx prettier --check "src/**/*.ts"'
-      #   language: system
-      #   files: ^<example-dir>/.*\.ts$
-      #   pass_filenames: false
+      # ── TypeScript: edge-cms ────────────────────────────────────────────
+      - id: ts-check-edge-cms
+        name: tsc --noEmit (edge-cms/typescript)
+        entry: bash -c 'cd edge-cms/typescript && npx tsc --noEmit'
+        language: system
+        files: ^edge-cms/typescript/.*\.ts$
+        pass_filenames: false

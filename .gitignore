@@ -9,6 +9,7 @@
 # Rust / Compute
 target/
 pkg/
+build/
 
 # Node.js
 node_modules/
@@ -23,10 +24,13 @@ __pycache__/
 
 # Terraform
 .terraform/
+.terraform.lock.hcl
 *.tfstate
 *.tfstate.backup
 *.tfvars
 !*.tfvars.example
+*.tfplan
+crash.log
 
 # IDE
 .idea/
@@ -40,4 +44,3 @@ __pycache__/
 # Superpowers brainstorm artifacts
 .superpowers/
 docs/superpowers/
-edge-cms/docs/superpowers/

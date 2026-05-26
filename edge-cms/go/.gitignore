@@ -1,5 +1,0 @@
-# Build artifacts
-bin/
-pkg/
-shared/
-.env

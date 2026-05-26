@@ -21,7 +21,7 @@ resource "fastly_service_vcl" "cdn" {
   # ---------------------------------------------------------------------------
   # Backends: Compute app services (one per language implementation)
   # The active backend is selected by the edge_cms_config dictionary.
-  # Default: Rust. Switch with: fastly dictionary-item update --key=active_backend --value=go
+  # Default: Rust. Switch with: fastly dictionary-item update --key=active_backend --value=go|ts
   # ---------------------------------------------------------------------------
   backend {
     name              = "edge-cms-compute"
@@ -34,6 +34,8 @@ resource "fastly_service_vcl" "cdn" {
 
     first_byte_timeout    = 30000
     between_bytes_timeout = 10000
+
+    request_condition = "snippet-routed"
   }
 
   backend {
@@ -47,6 +49,23 @@ resource "fastly_service_vcl" "cdn" {
 
     first_byte_timeout    = 30000
     between_bytes_timeout = 10000
+
+    request_condition = "snippet-routed"
+  }
+
+  backend {
+    name              = "edge-cms-compute-ts"
+    address           = "app-ts.${var.domain}"
+    port              = 443
+    use_ssl           = true
+    ssl_cert_hostname = "app-ts.${var.domain}"
+    ssl_sni_hostname  = "app-ts.${var.domain}"
+    override_host     = "app-ts.${var.domain}"
+
+    first_byte_timeout    = 30000
+    between_bytes_timeout = 10000
+
+    request_condition = "snippet-routed"
   }
 
   # ---------------------------------------------------------------------------
@@ -88,6 +107,7 @@ resource "fastly_service_vcl" "cdn" {
 
   # Backend selector — set active_backend to "rust" (default), "go", or "ts".
   # Switch live without deploy: fastly dictionary-item update ...
+  # Example: fastly dictionary-item update <dict-id> --key=active_backend --value=ts
   dictionary {
     name = "edge_cms_config"
   }
@@ -111,6 +131,8 @@ resource "fastly_service_vcl" "cdn" {
 
       if (var.active == "go") {
         set req.backend = F_edge_cms_compute_go;
+      } else if (var.active == "ts") {
+        set req.backend = F_edge_cms_compute_ts;
       } else {
         set req.backend = F_edge_cms_compute;
       }
@@ -126,6 +148,12 @@ resource "fastly_service_vcl" "cdn" {
         return(pass);
       }
     VCL
+  }
+
+  condition {
+    name      = "snippet-routed"
+    type      = "REQUEST"
+    statement = "!req.url"
   }
 
   condition {

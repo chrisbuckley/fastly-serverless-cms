@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths: [edge-cms/**]
 
+permissions:
+  contents: read
+  pull-requests: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
@@ -16,6 +20,7 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       go: ${{ steps.filter.outputs.go }}
+      typescript: ${{ steps.filter.outputs.typescript }}
       terraform: ${{ steps.filter.outputs.terraform }}
       vcl: ${{ steps.filter.outputs.vcl }}
     steps:
@@ -29,6 +34,9 @@ jobs:
               - 'edge-cms/shared/**'
             go:
               - 'edge-cms/go/**'
+              - 'edge-cms/shared/**'
+            typescript:
+              - 'edge-cms/typescript/**'
               - 'edge-cms/shared/**'
             terraform:
               - 'edge-cms/terraform/**'
@@ -101,8 +109,29 @@ jobs:
       - run: terraform init -backend=false
       - run: terraform validate
 
-  integration-tests:
-    name: Integration (Viceroy)
+  typescript-checks:
+    name: TypeScript (tsc + build)
+    needs: changes
+    if: needs.changes.outputs.typescript == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: edge-cms/typescript
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: edge-cms/typescript/package-lock.json
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx webpack
+
+  integration-tests-rust:
+    name: Integration — Rust (Viceroy)
     needs: [changes, rust-checks]
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
@@ -127,6 +156,69 @@ jobs:
             sleep 1
           done
           ./tests/integration.sh
+
+  integration-tests-go:
+    name: Integration — Go (Viceroy)
+    needs: [changes, go-checks]
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: edge-cms/go
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: fastly/compute-actions/setup@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: edge-cms/go/go.sum
+
+      - name: Build Compute package
+        run: make build
+
+      - name: Start Viceroy and run tests
+        run: |
+          fastly compute serve &
+          for i in $(seq 1 30); do
+            curl -s http://127.0.0.1:7676/ > /dev/null 2>&1 && break
+            sleep 1
+          done
+          ../rust/tests/integration.sh
+
+  integration-tests-typescript:
+    name: Integration — TypeScript (Viceroy)
+    needs: [changes, typescript-checks]
+    if: needs.changes.outputs.typescript == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: edge-cms/typescript
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: fastly/compute-actions/setup@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: edge-cms/typescript/package-lock.json
+
+      - run: npm ci
+
+      - name: Build Compute package
+        run: fastly compute build
+
+      - name: Start Viceroy and run tests
+        run: |
+          fastly compute serve &
+          for i in $(seq 1 30); do
+            curl -s http://127.0.0.1:7676/ > /dev/null 2>&1 && break
+            sleep 1
+          done
+          ../rust/tests/integration.sh
 
   vcl-checks:
     name: VCL (falco fmt + lint)

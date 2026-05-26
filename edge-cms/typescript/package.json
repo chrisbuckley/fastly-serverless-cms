@@ -1,0 +1,27 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prebuild": "npx webpack",
+    "build": "js-compute-runtime build/index.js bin/main.wasm",
+    "start": "fastly compute serve",
+    "deploy": "fastly compute publish",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest"
+  },
+  "dependencies": {
+    "@fastly/js-compute": "^3.42.1",
+    "bcryptjs": "^2.4.3",
+    "handlebars": "^4.7.8",
+    "marked": "^15.0.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jest": "^29.5.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.3.0",
+    "ts-loader": "^9.5.0",
+    "typescript": "^5.7.0",
+    "webpack": "^5.97.0",
+    "webpack-cli": "^6.0.0"
+  }
+}

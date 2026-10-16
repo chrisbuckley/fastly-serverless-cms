@@ -548,10 +548,15 @@ cd edge-cms/terraform/
 cp terraform.tfvars.example terraform.tfvars
 ```
 
+Export the Fastly API token for the provider (it is not a Terraform variable, so it never lands in `terraform.tfvars` or state inputs):
+
+```bash
+export FASTLY_API_KEY=<your-fastly-api-token>
+```
+
 Edit `terraform.tfvars`:
 
 ```hcl
-fastly_api_token     = "your-fastly-api-token"
 domain               = "your-domain.com"
 compute_package_path = "../rust/pkg/edge-cms.tar.gz"
 fos_region           = "us-east-1"
@@ -569,7 +574,6 @@ shield_pop           = "iad-va-us"
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `fastly_api_token` | Yes | — | Fastly API token for Terraform |
 | `domain` | Yes | — | Public domain (e.g. `edge-cms.example.com`) |
 | `compute_package_path` | No | `../rust/pkg/edge-cms.tar.gz` | Path to the built Compute package |
 | `fos_region` | No | `us-east-1` | Object Storage region |

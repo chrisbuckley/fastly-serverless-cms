@@ -1,9 +1,3 @@
-variable "fastly_api_token" {
-  description = "Fastly API token (automation account)"
-  type        = string
-  sensitive   = true
-}
-
 variable "domain" {
   description = "Public domain for the Edge CMS (e.g. edge-cms.example.com)"
   type        = string

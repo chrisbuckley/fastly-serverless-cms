@@ -82,19 +82,21 @@
     }
   }
 
-  // Cache status — re-request this page (same URL, default HTTP cache
-  // bypassed) and read Fastly's X-Cache header. With shielding it lists one
-  // value per cache node ("HIT, HIT"); the last entry is the edge node that
-  // served us. Note this is the status of the re-request, so a first view
-  // that was a MISS reads HIT here once the edge has stored the object.
+  // Cache status of THIS page load, as decided by the VCL edge. The VCL
+  // deliver snippet "cache-status" copies fastly_info.state (HIT/MISS/PASS)
+  // into `Server-Timing: cdn-cache;desc=<state>`. The browser can't read the
+  // main document's response headers, but it exposes Server-Timing on the
+  // Navigation Timing entry. (Re-fetching the page would always report HIT,
+  // since the page load itself fills the cache.)
   function updateCache() {
-    fetch(location.href, { cache: 'no-store', credentials: 'same-origin' })
-      .then(function (resp) {
-        var xc = resp.headers.get('x-cache') || '';
-        var last = xc.split(',').pop().trim().toUpperCase();
-        set('edge-stat-cache', /^(HIT|MISS|PASS)$/.test(last) ? last : '—');
-      })
-      .catch(function () {});
+    var entries = performance.getEntriesByType('navigation');
+    var st = entries.length && entries[0].serverTiming || [];
+    for (var i = 0; i < st.length; i++) {
+      if (st[i].name === 'cdn-cache' && /^(HIT|MISS|PASS)$/.test(st[i].description)) {
+        set('edge-stat-cache', st[i].description);
+        return;
+      }
+    }
   }
 
   // POP — fetch /api/edge-info (Cache-Control: no-store, hits Compute fresh

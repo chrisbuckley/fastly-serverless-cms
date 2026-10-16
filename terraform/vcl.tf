@@ -284,6 +284,19 @@ resource "fastly_service_vcl" "cdn" {
     VCL
   }
 
+  # Expose the edge cache result for the page load to the browser (read from
+  # Navigation Timing's serverTiming) so the sidebar can show HIT / MISS / PASS.
+  snippet {
+    name     = "cache-status"
+    type     = "deliver"
+    priority = 10
+    content  = <<-VCL
+      if (fastly_info.state ~ "^(HIT|MISS|PASS)") {
+        set resp.http.Server-Timing = "cdn-cache;desc=" + re.group.1;
+      }
+    VCL
+  }
+
   snippet {
     name     = "debug-headers"
     type     = "deliver"
@@ -370,7 +383,8 @@ resource "fastly_service_vcl" "cdn" {
   }
 
   product_enablement {
-    image_optimizer = true
+    domain_inspector = true
+    image_optimizer  = true
   }
 
   force_destroy = true

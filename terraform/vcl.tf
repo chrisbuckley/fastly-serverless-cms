@@ -297,6 +297,22 @@ resource "fastly_service_vcl" "cdn" {
     VCL
   }
 
+  # Browsers must revalidate cached HTML so per-load data (e.g. the sidebar
+  # cache status) is never stale. Edge TTL is unaffected: it comes from
+  # Surrogate-Control and is already decided before deliver runs. Only public
+  # HTML is touched; admin pages (private, no-store) and assets keep their own
+  # Cache-Control.
+  snippet {
+    name     = "html-revalidate"
+    type     = "deliver"
+    priority = 20
+    content  = <<-VCL
+      if (resp.http.Content-Type ~ "^text/html" && resp.http.Cache-Control ~ "public") {
+        set resp.http.Cache-Control = "public, no-cache";
+      }
+    VCL
+  }
+
   snippet {
     name     = "debug-headers"
     type     = "deliver"

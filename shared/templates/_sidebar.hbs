@@ -54,6 +54,10 @@
         <span class="edge-stat-label">POP</span>
       </div>
       <div class="edge-stat">
+        <span class="edge-stat-value" id="edge-stat-cache">—</span>
+        <span class="edge-stat-label">Cache</span>
+      </div>
+      <div class="edge-stat">
         <span class="edge-stat-value">3</span>
         <span class="edge-stat-label">Languages</span>
       </div>
@@ -76,6 +80,21 @@
     if (entries.length) {
       set('edge-stat-ttfb', Math.round(entries[0].responseStart) + 'ms');
     }
+  }
+
+  // Cache status — re-request this page (same URL, default HTTP cache
+  // bypassed) and read Fastly's X-Cache header. With shielding it lists one
+  // value per cache node ("HIT, HIT"); the last entry is the edge node that
+  // served us. Note this is the status of the re-request, so a first view
+  // that was a MISS reads HIT here once the edge has stored the object.
+  function updateCache() {
+    fetch(location.href, { cache: 'no-store', credentials: 'same-origin' })
+      .then(function (resp) {
+        var xc = resp.headers.get('x-cache') || '';
+        var last = xc.split(',').pop().trim().toUpperCase();
+        set('edge-stat-cache', /^(HIT|MISS|PASS)$/.test(last) ? last : '—');
+      })
+      .catch(function () {});
   }
 
   // POP — fetch /api/edge-info (Cache-Control: no-store, hits Compute fresh
@@ -106,9 +125,10 @@
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () { updateTtfb(); updatePop(); });
+    document.addEventListener('DOMContentLoaded', function () { updateTtfb(); updateCache(); updatePop(); });
   } else {
     updateTtfb();
+    updateCache();
     updatePop();
   }
 }());

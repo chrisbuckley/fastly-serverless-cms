@@ -44,6 +44,19 @@ pub fn edge_info(_req: &Request) -> Result<Response, Error> {
         .with_body(json!({ "pop": pop }).to_string()))
 }
 
+/// POP code for the footer: FASTLY_POP, falling back to "CDN" (matches TS).
+fn pop_code() -> String {
+    std::env::var("FASTLY_POP")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "CDN".to_string())
+}
+
+/// First 10 chars (YYYY-MM-DD) of an ISO timestamp; never panics on short input.
+fn lastmod(created_at: &str) -> String {
+    created_at.chars().take(10).collect()
+}
+
 /// Extract city and POP code from the client's IP via Fastly geo lookup.
 fn geo_context(req: &Request) -> (String, String) {
     req.get_client_ip_addr()
@@ -55,15 +68,9 @@ fn geo_context(req: &Request) -> (String, String) {
             } else {
                 city
             };
-            let code = geo.as_name().to_string();
-            let code = if code.is_empty() || code == "?" {
-                "CDN".to_string()
-            } else {
-                code
-            };
-            (city, code)
+            (city, pop_code())
         })
-        .unwrap_or_else(|| ("Edge".into(), "CDN".into()))
+        .unwrap_or_else(|| ("Edge".into(), pop_code()))
 }
 
 /// XML-escape a string for safe inclusion in RSS/XML output.
@@ -248,7 +255,7 @@ pub fn sitemap(_req: &Request) -> Result<Response, Error> {
         xml.push_str(&format!("    <loc>/post/{}</loc>\n", post.slug));
         xml.push_str(&format!(
             "    <lastmod>{}</lastmod>\n",
-            &post.created_at[..10]
+            lastmod(&post.created_at)
         ));
         xml.push_str("  </url>\n");
     }
@@ -268,4 +275,20 @@ pub fn robots() -> Result<Response, Error> {
         .with_header("Content-Type", "text/plain; charset=utf-8")
         .with_body(body);
     Ok(CacheHeaders::page(vec!["post-index"]).apply(resp))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lastmod_takes_date_part() {
+        assert_eq!(lastmod("2026-05-22T10:00:00Z"), "2026-05-22");
+    }
+
+    #[test]
+    fn lastmod_short_input_does_not_panic() {
+        assert_eq!(lastmod("2026"), "2026");
+        assert_eq!(lastmod(""), "");
+    }
 }

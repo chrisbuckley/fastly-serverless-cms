@@ -16,7 +16,9 @@ pub static ADMIN_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/js/admin.js"
 // Use handlebars_helper! macro so `eq` returns a boolean value usable in
 // {{#if (eq field "value")}} subexpressions. The macro-generated helper
 // returns a serde_json::Value which handlebars-rs evaluates for truthiness.
-handlebars::handlebars_helper!(eq_helper: |a: str, b: str| a == b);
+// Takes raw JSON values (not `str`) so a missing/null field — e.g. a sidebar
+// link without an icon — compares false instead of erroring (TS: `a === b`).
+handlebars::handlebars_helper!(eq_helper: |a: Json, b: Json| a == b);
 
 fn init_registry() -> Handlebars<'static> {
     let mut hbs = Handlebars::new();
@@ -120,4 +122,39 @@ fn reading_time_helper(
     let minutes = (content.split_whitespace().count() / 200).max(1);
     out.write(&minutes.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn render_eq(data: serde_json::Value) -> String {
+        let mut hbs = Handlebars::new();
+        hbs.set_strict_mode(false);
+        hbs.register_helper("eq", Box::new(eq_helper));
+        hbs.render_template(r#"{{#if (eq icon "github")}}Y{{else}}N{{/if}}"#, &data)
+            .expect("eq must not error")
+    }
+
+    #[test]
+    fn eq_matches_string() {
+        assert_eq!(render_eq(json!({"icon": "github"})), "Y");
+    }
+
+    #[test]
+    fn eq_non_matching_string() {
+        assert_eq!(render_eq(json!({"icon": "book"})), "N");
+    }
+
+    #[test]
+    fn eq_missing_field_does_not_error() {
+        // Link items without an icon omit the key entirely (models.rs).
+        assert_eq!(render_eq(json!({"label": "x"})), "N");
+    }
+
+    #[test]
+    fn eq_null_field_does_not_error() {
+        assert_eq!(render_eq(json!({"icon": null})), "N");
+    }
 }

@@ -54,6 +54,18 @@ fn parse_form_body(body: &str) -> HashMap<String, String> {
         .collect()
 }
 
+/// Form value, or `default()` when the key is absent OR empty (TS: `form[key] || old`).
+fn non_empty_or(
+    form: &HashMap<String, String>,
+    key: &str,
+    default: impl FnOnce() -> String,
+) -> String {
+    form.get(key)
+        .filter(|v| !v.is_empty())
+        .cloned()
+        .unwrap_or_else(default)
+}
+
 fn url_decode(s: &str) -> String {
     let s = s.replace('+', " ");
     let mut bytes: Vec<u8> = Vec::with_capacity(s.len());
@@ -400,22 +412,10 @@ pub fn update_post(req: Request, slug: &str) -> Result<Response, Error> {
     let body = req.into_body_str();
     let form = parse_form_body(&body);
 
-    let new_slug = form
-        .get("slug")
-        .cloned()
-        .unwrap_or_else(|| slug.to_string());
-    let title = form
-        .get("title")
-        .cloned()
-        .unwrap_or_else(|| old_post.title.clone());
-    let content = form
-        .get("content")
-        .cloned()
-        .unwrap_or_else(|| old_post.content.clone());
-    let excerpt = form
-        .get("excerpt")
-        .cloned()
-        .unwrap_or_else(|| old_post.excerpt.clone());
+    let new_slug = non_empty_or(&form, "slug", || slug.to_string());
+    let title = non_empty_or(&form, "title", || old_post.title.clone());
+    let content = non_empty_or(&form, "content", || old_post.content.clone());
+    let excerpt = non_empty_or(&form, "excerpt", || old_post.excerpt.clone());
     let status_str = form
         .get("status")
         .cloned()
@@ -530,14 +530,9 @@ pub fn upload_image(req: Request) -> Result<Response, Error> {
         return Ok(resp);
     }
 
-    let slug = req
-        .get_query_parameter("slug")
-        .unwrap_or("unnamed")
-        .to_string();
-    let filename = req
-        .get_query_parameter("filename")
-        .unwrap_or("upload.bin")
-        .to_string();
+    // get_query_parameter returns the raw value; decode like TS searchParams.
+    let slug = url_decode(req.get_query_parameter("slug").unwrap_or("unnamed"));
+    let filename = url_decode(req.get_query_parameter("filename").unwrap_or("upload.bin"));
     let content_type = req
         .get_header_str("Content-Type")
         .unwrap_or("application/octet-stream")
@@ -707,4 +702,36 @@ pub fn update_sidebar(req: Request) -> Result<Response, Error> {
         .with_body(serde_json::to_string(&json!({ "ok": true }))?);
 
     Ok(cache::no_cache(resp))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_empty_or_uses_value() {
+        let mut f = HashMap::new();
+        f.insert("slug".to_string(), "new".to_string());
+        assert_eq!(non_empty_or(&f, "slug", || "old".into()), "new");
+    }
+
+    #[test]
+    fn non_empty_or_falls_back_when_absent() {
+        let f = HashMap::new();
+        assert_eq!(non_empty_or(&f, "slug", || "old".into()), "old");
+    }
+
+    #[test]
+    fn non_empty_or_falls_back_when_empty() {
+        // Matches the TypeScript `form[key] || old` behaviour: an empty slug
+        // must never overwrite (and thereby delete) the existing post.
+        let mut f = HashMap::new();
+        f.insert("slug".to_string(), String::new());
+        assert_eq!(non_empty_or(&f, "slug", || "old".into()), "old");
+    }
+
+    #[test]
+    fn url_decode_percent_and_plus() {
+        assert_eq!(url_decode("my%20file+name.jpg"), "my file name.jpg");
+    }
 }

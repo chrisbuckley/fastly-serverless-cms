@@ -23,28 +23,49 @@ pub fn image(_req: &Request, path: &str) -> Result<Response, Error> {
     match store.lookup(&key) {
         Ok(mut resp) => {
             let bytes = resp.take_body_bytes();
-            let ct = if path.ends_with(".jpg") || path.ends_with(".jpeg") {
-                "image/jpeg"
-            } else if path.ends_with(".png") {
-                "image/png"
-            } else if path.ends_with(".webp") {
-                "image/webp"
-            } else if path.ends_with(".gif") {
-                "image/gif"
-            } else if path.ends_with(".svg") {
-                "image/svg+xml"
-            } else {
-                "application/octet-stream"
-            };
+            let ct = content_type_for(path);
             let slug = path.split('/').next().unwrap_or("unknown");
+            // with_body (not with_body_octet_stream, which resets Content-Type).
             let resp = Response::from_status(StatusCode::OK)
-                .with_header("Content-Type", ct)
-                .with_body_octet_stream(&bytes);
+                .with_body(bytes)
+                .with_header("Content-Type", ct);
             Ok(CacheHeaders::image(vec![&format!("image-{}", slug)]).apply(resp))
         }
         Err(KVStoreError::ItemNotFound) => {
             Ok(Response::from_status(StatusCode::NOT_FOUND).with_body("Image not found\n"))
         }
         Err(e) => Err(e.into()),
+    }
+}
+
+fn content_type_for(path: &str) -> &'static str {
+    if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if path.ends_with(".png") {
+        "image/png"
+    } else if path.ends_with(".webp") {
+        "image/webp"
+    } else if path.ends_with(".gif") {
+        "image/gif"
+    } else if path.ends_with(".svg") {
+        "image/svg+xml"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_types() {
+        assert_eq!(content_type_for("a/b.jpg"), "image/jpeg");
+        assert_eq!(content_type_for("a/b.jpeg"), "image/jpeg");
+        assert_eq!(content_type_for("a/b.png"), "image/png");
+        assert_eq!(content_type_for("a/b.webp"), "image/webp");
+        assert_eq!(content_type_for("a/b.gif"), "image/gif");
+        assert_eq!(content_type_for("a/b.svg"), "image/svg+xml");
+        assert_eq!(content_type_for("a/b.bin"), "application/octet-stream");
     }
 }

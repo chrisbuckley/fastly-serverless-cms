@@ -9,6 +9,5 @@ terraform {
   }
 }
 
-provider "fastly" {
-  api_key = var.fastly_api_token
-}
+# API key is read from the FASTLY_API_KEY environment variable.
+provider "fastly" {}

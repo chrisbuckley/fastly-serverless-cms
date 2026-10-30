@@ -20,6 +20,8 @@ shield_pop = "iad-va-us"
 # go_backend_host = "app-go.edge-cms.example.com"
 # ts_backend_host = "app-ts.edge-cms.example.com"
 
-# Optional: HTTPS log drain
+# Optional: HTTPS log drain (Compute app logs, endpoint edge-cms-app-logs)
 # logging_endpoint_url = "https://your-log-drain.example.com/logs"
 # logging_token        = "your-logging-auth-token"
+# Also send VCL CDN request logs there (truncated IPs, paths only). Default off.
+# enable_vcl_logging   = true

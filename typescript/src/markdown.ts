@@ -1,9 +1,15 @@
 import { marked } from "marked";
 
+import { sanitizeHtml } from "./sanitize.js";
+
 marked.setOptions({ gfm: true });
 
 export function renderMarkdown(input: string): string {
   return marked.parse(input) as string;
+}
+
+export function renderPostHtml(markdown: string): string {
+  return rewriteImages(sanitizeHtml(renderMarkdown(markdown)));
 }
 
 export function rewriteImages(html: string): string {

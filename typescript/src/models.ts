@@ -19,6 +19,7 @@ export interface PostMeta {
   excerpt: string;
   status: PostStatus;
   created_at: string;
+  updated_at?: string;
   tags: string[];
   featured_image: string | null;
 }
@@ -33,6 +34,14 @@ export type SidebarItem =
 
 export interface SidebarConfig {
   items: SidebarItem[];
+}
+
+export function parseJsonSafe(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 export function firstContentImage(content: string): string | null {
@@ -52,7 +61,7 @@ export function published(index: PostIndex): PostMeta[] {
 
 export function byTag(index: PostIndex, tag: string): PostMeta[] {
   return index.posts.filter(
-    (p) => p.status === "published" && p.tags.includes(tag)
+    (p) => p.status === "published" && p.tags.includes(tag),
   );
 }
 
@@ -68,20 +77,30 @@ export function allTags(index: PostIndex): string[] {
   return [...seen].sort();
 }
 
-export function addPost(index: PostIndex, post: Post): void {
-  index.posts = index.posts.filter((p) => p.slug !== post.slug);
-  const image = post.featured_image ?? firstContentImage(post.content);
-  index.posts.unshift({
+export function postMeta(post: Post): PostMeta {
+  return {
     slug: post.slug,
     title: post.title,
     excerpt: post.excerpt,
     status: post.status,
     created_at: post.created_at,
+    updated_at: post.updated_at,
     tags: post.tags,
-    featured_image: image,
-  });
+    featured_image: post.featured_image ?? firstContentImage(post.content),
+  };
+}
+
+export function addPost(index: PostIndex, post: Post): void {
+  index.posts = index.posts.filter((p) => p.slug !== post.slug);
+  index.posts.unshift(postMeta(post));
 }
 
 export function removePost(index: PostIndex, slug: string): void {
   index.posts = index.posts.filter((p) => p.slug !== slug);
+}
+
+export function rebuildIndex(posts: Post[]): PostIndex {
+  const metas = posts.map(postMeta);
+  metas.sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
+  return { posts: metas };
 }

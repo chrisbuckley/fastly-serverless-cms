@@ -136,10 +136,52 @@ resource "fastly_service_vcl" "cdn" {
   #     the first Fastly hop (edge, not shield) overwrite it with the real
   #     client IP. Compute trusts it once origin auth passes (contract §1).
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Force TLS — plain-HTTP requests get a 301 to https:// (handled in the
+  # edge-errors snippet). Only checked on the first Fastly hop: edge→shield
+  # traffic is Fastly-internal and must not be redirected.
+  # ---------------------------------------------------------------------------
+  snippet {
+    name     = "force-tls"
+    type     = "recv"
+    priority = 1
+    content  = <<-VCL
+      if (fastly.ff.visits_this_service == 0 && !req.is_ssl) {
+        error 601 "Force TLS";
+      }
+    VCL
+  }
+
+  snippet {
+    name     = "hsts"
+    type     = "deliver"
+    priority = 5
+    content  = <<-VCL
+      set resp.http.Strict-Transport-Security = "max-age=31536000; includeSubDomains";
+    VCL
+  }
+
+  # Synthetic responses for the custom error codes raised in vcl_recv.
+  snippet {
+    name     = "edge-errors"
+    type     = "error"
+    priority = 10
+    content  = <<-VCL
+      if (obj.status == 601) {
+        set obj.status = 301;
+        set obj.response = "Moved Permanently";
+        set obj.http.Location = "https://" + req.http.host + req.url;
+        set obj.http.Cache-Control = "private, no-store";
+        synthetic {""};
+        return(deliver);
+      }
+    VCL
+  }
+
   snippet {
     name     = "edge-request"
     type     = "recv"
-    priority = 1
+    priority = 2
     content  = <<-VCL
       unset req.http.Edge-CMS-Origin-Auth;
       if (fastly.ff.visits_this_service == 0) {

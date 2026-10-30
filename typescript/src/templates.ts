@@ -1,4 +1,5 @@
 import Handlebars from "handlebars";
+import { env } from "fastly:env";
 
 import layoutHbs from "../../shared/templates/layout.hbs";
 import homeHbs from "../../shared/templates/home.hbs";
@@ -11,11 +12,10 @@ import adminEditorHbs from "../../shared/templates/admin-editor.hbs";
 import adminSidebarHbs from "../../shared/templates/admin-sidebar.hbs";
 import sidebarPartialHbs from "../../shared/templates/_sidebar.hbs";
 
-import cssContent from "../../shared/css/style.css";
-import adminJsContent from "../../shared/js/admin.js";
+import { getContext } from "./context.js";
 
-export const CSS: string = cssContent;
-export const ADMIN_JS: string = adminJsContent;
+export const DEFAULT_DESCRIPTION =
+  "A CMS running entirely on Fastly's edge platform";
 
 const MONTH_NAMES = [
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -71,14 +71,34 @@ function getTemplate(name: string): HandlebarsTemplateDelegate {
   return compiled[name];
 }
 
-export function render(template: string, data: unknown): string {
-  return getTemplate(template)(data);
+export function assetVersion(): string {
+  return env("FASTLY_SERVICE_VERSION") || "dev";
+}
+
+function baseVars(): Record<string, unknown> {
+  const ctx = getContext();
+  return {
+    site_url: ctx.siteUrl,
+    page_title: "edge/cms",
+    meta_description: DEFAULT_DESCRIPTION,
+    canonical_url: `${ctx.siteUrl}${ctx.path}`,
+    og_type: "website",
+    og_image: "",
+    noindex: false,
+    asset_version: assetVersion(),
+    is_admin: false,
+  };
+}
+
+export function render(template: string, data: Record<string, unknown>): string {
+  return getTemplate(template)({ ...baseVars(), ...data });
 }
 
 export function renderPage(
   template: string,
   data: Record<string, unknown>,
 ): string {
-  const body = getTemplate(template)(data);
-  return getTemplate("layout")({ ...data, body });
+  const vars = { ...baseVars(), ...data };
+  const body = getTemplate(template)(vars);
+  return getTemplate("layout")({ ...vars, body });
 }

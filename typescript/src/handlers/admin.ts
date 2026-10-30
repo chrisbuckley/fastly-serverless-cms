@@ -1,10 +1,10 @@
-import { KVStore } from "fastly:kv-store";
 import { SecretStore } from "fastly:secret-store";
 
-import { Post, PostIndex, SidebarConfig, addPost, removePost } from "../models.js";
+import { Post, PostIndex, addPost, removePost } from "../models.js";
 import { render, renderPage } from "../templates.js";
-import { noCacheHeaders, purgeKeys } from "../cache.js";
+import { purgeKeys } from "../cache.js";
 import {
+  SESSION_TTL_SECONDS,
   createSessionToken,
   verifySessionToken,
   verifyPassword,
@@ -14,169 +14,203 @@ import {
 } from "../auth.js";
 import { sha256Hex, deriveSigningKey, sign, utcDatetime } from "../sigv4.js";
 import { notFound } from "../error.js";
-import { readIndex, readSidebar } from "./public.js";
+import { nowISO8601 } from "../dates.js";
+import { parseFormBody, parseQuery } from "../forms.js";
+import { validateSidebar } from "../sidebar.js";
+import { getContext } from "../context.js";
+import { loginRateLimited, tooManyLogins } from "../security.js";
+import { clip, logLine } from "../logging.js";
+import {
+  BodyResult,
+  htmlResponse,
+  jsonResponse,
+  plainError,
+  readBody,
+  redirect,
+  wantsJson,
+} from "../http.js";
+import {
+  MAX_CONTENT_BYTES,
+  MAX_FORM_BYTES,
+  MAX_SIDEBAR_BYTES,
+  MAX_UPLOAD_BYTES,
+  contentTooLarge,
+  detectImageType,
+  extensionMatchesType,
+  isSafeUrl,
+  isValidSlug,
+  isValidStatus,
+  isValidUploadFilename,
+  normalizeTags,
+  validateExcerpt,
+  validateTitle,
+} from "../validation.js";
+import {
+  deletePostKey,
+  isSessionRevoked,
+  postExists,
+  readIndex,
+  readPost,
+  readSidebar,
+  rebuildIndexFromPosts,
+  revokeSession,
+  writeIndex,
+  writePost,
+  writeRevision,
+  writeSidebar,
+  writeTrash,
+} from "../kv.js";
+import { sidebarViewItems } from "../sidebar.js";
 
 // ---------------------------------------------------------------------------
 // Auth helpers
 // ---------------------------------------------------------------------------
 
+function redirectToLogin(reason: string): Response {
+  return redirect(`/admin/login?error=${reason}`);
+}
+
+async function hmacKey(): Promise<Uint8Array | null> {
+  const entry = await new SecretStore("secrets").get("hmac_key");
+  return entry ? new TextEncoder().encode(entry.plaintext()) : null;
+}
+
 async function requireAuth(req: Request): Promise<null | Response> {
-  const cookie = req.headers.get("cookie") || "";
-  const token = extractCookie(cookie, "session");
+  const token = extractCookie(req.headers.get("cookie") || "", "session");
   if (!token) return redirectToLogin("expired");
 
-  const secrets = new SecretStore("secrets");
-  const hmacSecret = await secrets.get("hmac_key");
-  if (!hmacSecret) return redirectToLogin("error");
+  const key = await hmacKey();
+  if (!key) return redirectToLogin("error");
 
-  const key = new TextEncoder().encode(hmacSecret.plaintext());
   const result = await verifySessionToken(key, token);
-  if (result !== "ok") return redirectToLogin(result);
+  if (result.status !== "ok" || !result.nonce) {
+    return redirectToLogin(result.status);
+  }
+  if (await isSessionRevoked(result.nonce)) return redirectToLogin("expired");
 
   return null;
 }
 
-function redirectToLogin(reason: string): Response {
-  return new Response(null, {
-    status: 302,
-    headers: { Location: `/admin/login?error=${reason}` },
-  });
+function adminVars(title: string): Record<string, unknown> {
+  return {
+    is_admin: true,
+    noindex: true,
+    page_title: title,
+    meta_description: "edge/cms administration",
+  };
 }
 
 // ---------------------------------------------------------------------------
-// Form parsing
+// Request field parsing
 // ---------------------------------------------------------------------------
 
-function parseFormBody(body: string): Record<string, string> {
-  const params: Record<string, string> = {};
-  for (const pair of body.split("&")) {
-    if (!pair) continue;
-    const eq = pair.indexOf("=");
-    if (eq < 0) continue;
-    const key = decodeURIComponent(pair.slice(0, eq).replace(/\+/g, " "));
-    const value = decodeURIComponent(pair.slice(eq + 1).replace(/\+/g, " "));
-    params[key] = value;
+type Fields = Record<string, string | undefined>;
+type FieldsResult = { ok: true; fields: Fields } | { ok: false; status: number; message: string };
+
+function bodyText(body: BodyResult): string | null {
+  return body.ok ? new TextDecoder().decode(body.bytes) : null;
+}
+
+function jsonFields(text: string): Fields | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
   }
-  return params;
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return null;
+  }
+  const out: Fields = Object.create(null);
+  for (const [k, v] of Object.entries(parsed)) {
+    if (typeof v === "string") out[k] = v;
+    else if (Array.isArray(v) && v.every((x) => typeof x === "string")) {
+      out[k] = v.join(",");
+    }
+  }
+  return out;
 }
 
-function parseTags(tagStr: string): string[] {
-  return tagStr
-    .split(",")
-    .map((t) => t.trim())
-    .filter((t) => t.length > 0);
+async function readFields(req: Request): Promise<FieldsResult> {
+  const text = bodyText(await readBody(req, MAX_FORM_BYTES));
+  if (text === null) return { ok: false, status: 413, message: "Request body too large" };
+
+  const isJson = (req.headers.get("content-type") || "").toLowerCase().includes("application/json");
+  if (!isJson) return { ok: true, fields: parseFormBody(text) };
+
+  const fields = jsonFields(text);
+  return fields
+    ? { ok: true, fields }
+    : { ok: false, status: 400, message: "Invalid JSON body" };
 }
 
-function nowISO8601(): string {
-  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+function purgeSet(slugs: string[], tags: string[]): string[] {
+  const keys = new Set<string>(["post-index", "sidebar"]);
+  for (const s of slugs) keys.add(`post-${s}`);
+  for (const t of tags) keys.add(`tag-${t}`);
+  return [...keys];
+}
+
+function adminRedirect(purgeOk: boolean): Response {
+  return redirect(purgeOk ? "/admin" : "/admin?purge=failed");
 }
 
 // ---------------------------------------------------------------------------
 // Login handlers
 // ---------------------------------------------------------------------------
 
+const LOGIN_ERRORS: Record<string, string> = {
+  invalid: "Invalid password. Please try again.",
+  expired: "Session expired. Please log in again.",
+  error: "An error occurred. Please try again.",
+};
+
 export async function loginPage(req: Request): Promise<Response> {
-  const url = new URL(req.url);
-  const reason = url.searchParams.get("error");
+  const reason = new URL(req.url).searchParams.get("error");
+  const error = reason ? (LOGIN_ERRORS[reason] ?? "Please log in.") : null;
 
-  let error: string | null = null;
-  if (reason) {
-    switch (reason) {
-      case "invalid":
-        error = "Invalid password. Please try again.";
-        break;
-      case "expired":
-        error = "Session expired. Please log in again.";
-        break;
-      case "error":
-        error = "An error occurred. Please try again.";
-        break;
-      default:
-        error = "Please log in.";
-        break;
-    }
-  }
-
-  const html = render("login", { error });
-
-  const headers = noCacheHeaders();
-  headers.set("Content-Type", "text/html; charset=utf-8");
-  return new Response(html, { status: 200, headers });
+  const html = render("login", {
+    ...adminVars("Login"),
+    is_admin: false,
+    meta_description: "Sign in to edge/cms",
+    error,
+  });
+  return htmlResponse(html);
 }
 
 export async function loginSubmit(req: Request): Promise<Response> {
-  const body = await req.text();
-  const form = parseFormBody(body);
+  if (loginRateLimited(getContext().clientIp)) return tooManyLogins();
 
-  const password = form["password"];
-  if (!password) {
-    return new Response(null, {
-      status: 302,
-      headers: { Location: "/admin/login?error=invalid" },
-    });
-  }
+  const text = bodyText(await readBody(req, MAX_FORM_BYTES));
+  if (text === null) return plainError(413, "Request body too large");
+  const password = parseFormBody(text)["password"];
+  if (!password) return redirectToLogin("invalid");
 
-  // Read stored password hash from Secret Store
-  let secrets: SecretStore;
-  try {
-    secrets = new SecretStore("secrets");
-  } catch {
-    return new Response(null, {
-      status: 302,
-      headers: { Location: "/admin/login?error=error" },
-    });
-  }
-
+  const secrets = new SecretStore("secrets");
   const hashEntry = await secrets.get("admin_password");
-  if (!hashEntry) {
-    return new Response(null, {
-      status: 302,
-      headers: { Location: "/admin/login?error=error" },
-    });
-  }
-
-  const hash = hashEntry.plaintext();
-
-  // Verify password
-  const valid = await verifyPassword(password, hash);
-  if (!valid) {
-    return new Response(null, {
-      status: 302,
-      headers: { Location: "/admin/login?error=invalid" },
-    });
-  }
-
-  // Create session token
   const hmacEntry = await secrets.get("hmac_key");
-  if (!hmacEntry) {
-    return new Response(null, {
-      status: 302,
-      headers: { Location: "/admin/login?error=error" },
-    });
+  if (!hashEntry || !hmacEntry) return redirectToLogin("error");
+
+  if (!(await verifyPassword(password, hashEntry.plaintext()))) {
+    logLine("warn", "login failed", { status: 302 });
+    return redirectToLogin("invalid");
   }
 
   const key = new TextEncoder().encode(hmacEntry.plaintext());
-  const token = await createSessionToken(key, 3600);
-  const cookie = sessionCookie(token);
-
-  return new Response(null, {
-    status: 302,
-    headers: new Headers([
-      ["Location", "/admin"],
-      ["Set-Cookie", cookie],
-    ]),
-  });
+  const token = await createSessionToken(key, SESSION_TTL_SECONDS);
+  return redirect("/admin", [["Set-Cookie", sessionCookie(token)]]);
 }
 
-export function logout(): Response {
-  const cookie = clearSessionCookie();
-  return new Response(null, {
-    status: 302,
-    headers: new Headers([
-      ["Location", "/"],
-      ["Set-Cookie", cookie],
-    ]),
-  });
+export async function logout(req: Request): Promise<Response> {
+  const token = extractCookie(req.headers.get("cookie") || "", "session");
+  const key = token ? await hmacKey() : null;
+  if (token && key) {
+    const result = await verifySessionToken(key, token);
+    if (result.status === "ok" && result.nonce && result.expires) {
+      await revokeSession(result.nonce, result.expires, Math.floor(Date.now() / 1000));
+    }
+  }
+  return redirect("/", [["Set-Cookie", clearSessionCookie()]]);
 }
 
 // ---------------------------------------------------------------------------
@@ -188,235 +222,298 @@ export async function dashboard(req: Request): Promise<Response> {
   if (authResp) return authResp;
 
   const index = await readIndex();
-
-  const totalPosts = index.posts.length;
-  const publishedCount = index.posts.filter(
-    (p) => p.status === "published",
-  ).length;
-  const draftCount = totalPosts - publishedCount;
+  const total = index.posts.length;
+  const publishedCount = index.posts.filter((p) => p.status === "published").length;
 
   const html = renderPage("admin-dashboard", {
-    is_admin: true,
+    ...adminVars("Dashboard"),
     posts: index.posts,
-    total_posts: totalPosts,
+    total_posts: total,
     published_count: publishedCount,
-    draft_count: draftCount,
+    draft_count: total - publishedCount,
+    purge_failed: new URL(req.url).searchParams.get("purge") === "failed",
   });
-
-  const headers = noCacheHeaders();
-  headers.set("Content-Type", "text/html; charset=utf-8");
-  return new Response(html, { status: 200, headers });
+  return htmlResponse(html);
 }
 
 // ---------------------------------------------------------------------------
 // Post CRUD
 // ---------------------------------------------------------------------------
 
+interface EditorPost {
+  slug: string;
+  title: string;
+  content: string;
+  excerpt: string;
+  status: string;
+  tags_str: string;
+  featured_image: string;
+}
+
+function editorPage(
+  isNew: boolean,
+  post: EditorPost,
+  error: string | null,
+  status = 200,
+): Response {
+  const html = renderPage("admin-editor", {
+    ...adminVars(isNew ? "New post" : "Edit post"),
+    is_new: isNew,
+    editing: !isNew,
+    error,
+    post,
+  });
+  return htmlResponse(html, status);
+}
+
+function editorFromFields(fields: Fields, fallbackSlug: string): EditorPost {
+  return {
+    slug: fields.slug ?? fallbackSlug,
+    title: fields.title ?? "",
+    content: fields.content ?? "",
+    excerpt: fields.excerpt ?? "",
+    status: fields.status ?? "draft",
+    tags_str: fields.tags ?? "",
+    featured_image: fields.featured_image ?? "",
+  };
+}
+
+function editorFromPost(post: Post): EditorPost {
+  return {
+    slug: post.slug,
+    title: post.title,
+    content: post.content,
+    excerpt: post.excerpt,
+    status: post.status,
+    tags_str: post.tags.join(", "),
+    featured_image: post.featured_image ?? "",
+  };
+}
+
+function failure(
+  req: Request,
+  status: number,
+  message: string,
+  isNew: boolean,
+  editor: EditorPost,
+): Response {
+  return wantsJson(req)
+    ? jsonResponse({ error: message }, status)
+    : editorPage(isNew, editor, message, status);
+}
+
+function cleanFeaturedImage(raw: string | undefined): string | null {
+  const value = (raw ?? "").trim();
+  return value !== "" && value.length <= 500 && isSafeUrl(value) ? value : null;
+}
+
+interface Validated {
+  title: string;
+  content: string;
+  excerpt: string;
+}
+
+function validateText(
+  fields: Fields,
+  existing: Post | null,
+): { ok: true; value: Validated } | { ok: false; status: number; message: string } {
+  const title = (fields.title ? fields.title : existing?.title ?? "").trim();
+  const content = fields.content ? fields.content : existing?.content ?? "";
+  const excerpt = fields.excerpt ?? existing?.excerpt ?? "";
+
+  if (!validateTitle(title)) {
+    return { ok: false, status: 400, message: "Title must be 1-200 characters" };
+  }
+  if (!validateExcerpt(excerpt)) {
+    return { ok: false, status: 400, message: "Excerpt must be at most 500 characters" };
+  }
+  if (contentTooLarge(content)) {
+    return {
+      ok: false,
+      status: 413,
+      message: `Content must be at most ${MAX_CONTENT_BYTES / 1024} KiB`,
+    };
+  }
+  return { ok: true, value: { title, content, excerpt } };
+}
+
 export async function newPost(req: Request): Promise<Response> {
   const authResp = await requireAuth(req);
   if (authResp) return authResp;
 
-  const html = renderPage("admin-editor", {
-    is_admin: true,
-    editing: false,
-  });
-
-  const headers = noCacheHeaders();
-  headers.set("Content-Type", "text/html; charset=utf-8");
-  return new Response(html, { status: 200, headers });
+  return editorPage(
+    true,
+    { slug: "", title: "", content: "", excerpt: "", status: "draft", tags_str: "", featured_image: "" },
+    null,
+  );
 }
 
 export async function createPost(req: Request): Promise<Response> {
   const authResp = await requireAuth(req);
   if (authResp) return authResp;
 
-  const body = await req.text();
-  const form = parseFormBody(body);
+  const parsed = await readFields(req);
+  if (!parsed.ok) {
+    return wantsJson(req)
+      ? jsonResponse({ error: parsed.message }, parsed.status)
+      : plainError(parsed.status, parsed.message);
+  }
+  const fields = parsed.fields;
+  const editor = editorFromFields(fields, "");
+  const fail = (status: number, message: string) => failure(req, status, message, true, editor);
 
-  const slug = form["slug"] || "";
-  const title = form["title"] || "";
-  const content = form["content"] || "";
-  const excerpt = form["excerpt"] || "";
-  const statusStr = form["status"] || "draft";
-  const tagsStr = form["tags"] || "";
-  const featuredImage = form["featured_image"] || null;
+  const slug = (fields.slug ?? "").trim();
+  if (!isValidSlug(slug)) return fail(400, "Slug must be lowercase letters, numbers and hyphens (max 100)");
 
-  const status = statusStr === "published" ? "published" : "draft";
-  const tags = parseTags(tagsStr);
+  const text = validateText(fields, null);
+  if (!text.ok) return fail(text.status, text.message);
+
+  const status = fields.status ?? "draft";
+  if (!isValidStatus(status)) return fail(400, "Status must be published or draft");
+
+  if (await postExists(slug)) return fail(409, "A post with this slug already exists");
+
   const now = nowISO8601();
-
   const post: Post = {
     slug,
-    title,
-    content,
-    excerpt,
+    ...text.value,
     status,
     created_at: now,
     updated_at: now,
-    tags,
-    featured_image: featuredImage || null,
+    tags: normalizeTags(fields.tags ?? ""),
+    featured_image: cleanFeaturedImage(fields.featured_image),
     author: "Admin",
   };
 
-  // Write post to KV Store
-  const store = new KVStore("content");
-  const postJson = JSON.stringify(post);
-  await store.put(`post:${slug}`, postJson);
-
-  // Update index
+  await writePost(post);
   const index = await readIndex();
   addPost(index, post);
-  await store.put("_index", JSON.stringify(index));
+  await writeIndex(index);
 
-  // Purge cache
-  await purgeKeys(["post-index"]);
-
-  return new Response(null, {
-    status: 302,
-    headers: { Location: "/admin" },
-  });
+  const purged = await purgeKeys(purgeSet([slug], post.tags));
+  return adminRedirect(purged);
 }
 
 export async function editPost(req: Request, slug: string): Promise<Response> {
   const authResp = await requireAuth(req);
   if (authResp) return authResp;
 
-  const store = new KVStore("content");
-  const entry = await store.get(`post:${slug}`);
-  if (!entry) return notFound();
+  if (!isValidSlug(slug)) return notFound();
+  const post = await readPost(slug);
+  if (!post) return notFound();
 
-  const post: Post = JSON.parse(await entry.text());
-  const tagsStr = post.tags.join(", ");
-
-  const html = renderPage("admin-editor", {
-    is_admin: true,
-    editing: true,
-    post: {
-      slug: post.slug,
-      title: post.title,
-      content: post.content,
-      excerpt: post.excerpt,
-      status: post.status,
-      tags: post.tags,
-      tags_str: tagsStr,
-      featured_image: post.featured_image,
-      author: post.author,
-      created_at: post.created_at,
-      updated_at: post.updated_at,
-    },
-  });
-
-  const headers = noCacheHeaders();
-  headers.set("Content-Type", "text/html; charset=utf-8");
-  return new Response(html, { status: 200, headers });
+  return editorPage(false, editorFromPost(post), null);
 }
 
-export async function updatePost(
-  req: Request,
-  slug: string,
-): Promise<Response> {
+export async function updatePost(req: Request, slug: string): Promise<Response> {
   const authResp = await requireAuth(req);
   if (authResp) return authResp;
 
-  const store = new KVStore("content");
+  if (!isValidSlug(slug)) return notFound();
+  const old = await readPost(slug);
+  if (!old) return notFound();
 
-  // Read existing post
-  const entry = await store.get(`post:${slug}`);
-  if (!entry) return notFound();
-  const oldPost: Post = JSON.parse(await entry.text());
+  const parsed = await readFields(req);
+  if (!parsed.ok) {
+    return wantsJson(req)
+      ? jsonResponse({ error: parsed.message }, parsed.status)
+      : plainError(parsed.status, parsed.message);
+  }
+  const fields = parsed.fields;
+  const editor = { ...editorFromPost(old), ...definedFields(fields) };
+  const fail = (status: number, message: string) => failure(req, status, message, false, editor);
 
-  const body = await req.text();
-  const form = parseFormBody(body);
+  const newSlug = fields.slug ? fields.slug.trim() : slug;
+  if (!isValidSlug(newSlug)) return fail(400, "Slug must be lowercase letters, numbers and hyphens (max 100)");
 
-  const newSlug = form["slug"] || slug;
-  const title = form["title"] || oldPost.title;
-  const content = form["content"] || oldPost.content;
-  const excerpt = form["excerpt"] || oldPost.excerpt;
-  const statusStr = form["status"] || "draft";
-  const tagsStr = form["tags"] || "";
-  const featuredImage = form["featured_image"] || null;
+  const text = validateText(fields, old);
+  if (!text.ok) return fail(text.status, text.message);
 
-  const status = statusStr === "published" ? "published" : "draft";
-  const tags = parseTags(tagsStr);
-  const now = nowISO8601();
+  const status = fields.status ?? old.status;
+  if (!isValidStatus(status)) return fail(400, "Status must be published or draft");
 
-  const updatedPost: Post = {
+  const renamed = newSlug !== slug;
+  if (renamed && (await postExists(newSlug))) {
+    return fail(409, "A post with the new slug already exists");
+  }
+
+  const updated: Post = {
     slug: newSlug,
-    title,
-    content,
-    excerpt,
+    ...text.value,
     status,
-    created_at: oldPost.created_at,
-    updated_at: now,
-    tags,
-    featured_image: featuredImage || null,
-    author: oldPost.author,
+    created_at: old.created_at,
+    updated_at: nowISO8601(),
+    tags: fields.tags === undefined ? old.tags : normalizeTags(fields.tags),
+    featured_image:
+      fields.featured_image === undefined
+        ? old.featured_image
+        : cleanFeaturedImage(fields.featured_image),
+    author: old.author,
   };
 
-  // Write updated post
-  const postJson = JSON.stringify(updatedPost);
-  await store.put(`post:${newSlug}`, postJson);
+  await writeRevision(old, Math.floor(Date.now() / 1000));
+  await writePost(updated);
 
-  // If slug changed, delete the old key
-  if (newSlug !== slug) {
-    await store.delete(`post:${slug}`);
-  }
-
-  // Update index
   const index = await readIndex();
-  if (newSlug !== slug) {
-    removePost(index, slug);
-  }
-  addPost(index, updatedPost);
-  await store.put("_index", JSON.stringify(index));
+  if (renamed) removePost(index, slug);
+  addPost(index, updated);
+  await writeIndex(index);
 
-  // Purge cache
-  const purgeList = [`post-${slug}`, "post-index"];
-  if (newSlug !== slug) {
-    purgeList.push(`post-${newSlug}`);
-  }
-  await purgeKeys(purgeList);
+  if (renamed) await deletePostKey(slug);
 
-  return new Response(null, {
-    status: 302,
-    headers: { Location: "/admin" },
-  });
+  const purged = await purgeKeys(
+    purgeSet([slug, newSlug], [...old.tags, ...updated.tags]),
+  );
+  return adminRedirect(purged);
 }
 
-export async function deletePost(
-  req: Request,
-  slug: string,
-): Promise<Response> {
+function definedFields(fields: Fields): Partial<EditorPost> {
+  const out: Partial<EditorPost> = {};
+  if (fields.slug !== undefined) out.slug = fields.slug;
+  if (fields.title !== undefined) out.title = fields.title;
+  if (fields.content !== undefined) out.content = fields.content;
+  if (fields.excerpt !== undefined) out.excerpt = fields.excerpt;
+  if (fields.status !== undefined) out.status = fields.status;
+  if (fields.tags !== undefined) out.tags_str = fields.tags;
+  if (fields.featured_image !== undefined) out.featured_image = fields.featured_image;
+  return out;
+}
+
+export async function deletePost(req: Request, slug: string): Promise<Response> {
   const authResp = await requireAuth(req);
   if (authResp) return authResp;
 
-  const store = new KVStore("content");
+  if (!isValidSlug(slug)) return notFound();
+  const existing = await readPost(slug);
+  if (existing) {
+    await writeTrash(existing);
+    await deletePostKey(slug);
+  }
 
-  // Delete the post (ignore if not found)
-  await store.delete(`post:${slug}`);
-
-  // Remove from index
   const index = await readIndex();
   removePost(index, slug);
-  await store.put("_index", JSON.stringify(index));
+  await writeIndex(index);
 
-  // Purge cache
-  await purgeKeys([`post-${slug}`, "post-index"]);
+  const purged = await purgeKeys(purgeSet([slug], existing?.tags ?? []));
+  return adminRedirect(purged);
+}
 
-  return new Response(null, {
-    status: 302,
-    headers: { Location: "/admin" },
-  });
+export async function rebuildIndex(req: Request): Promise<Response> {
+  const authResp = await requireAuth(req);
+  if (authResp) return authResp;
+
+  const index: PostIndex = await rebuildIndexFromPosts();
+  await writeIndex(index);
+
+  const purged = await purgeKeys(["post-index"]);
+  return adminRedirect(purged);
 }
 
 // ---------------------------------------------------------------------------
 // Image upload
 // ---------------------------------------------------------------------------
 
-async function readSecret(
-  secrets: SecretStore,
-  name: string,
-): Promise<string> {
+async function readSecret(secrets: SecretStore, name: string): Promise<string> {
   const entry = await secrets.get(name);
   if (!entry) throw new Error(`missing secret: ${name}`);
   return entry.plaintext();
@@ -426,17 +523,22 @@ export async function uploadImage(req: Request): Promise<Response> {
   const authResp = await requireAuth(req);
   if (authResp) return authResp;
 
-  const url = new URL(req.url);
-  const slug = url.searchParams.get("slug") || "unnamed";
-  const filename = url.searchParams.get("filename") || "upload.bin";
-  const contentType =
-    req.headers.get("Content-Type") || "application/octet-stream";
+  const query = parseQuery(new URL(req.url).search);
+  const slug = query["slug"] ?? "";
+  const filename = query["filename"] ?? "";
+  if (!isValidSlug(slug)) return jsonResponse({ error: "Invalid slug" }, 400);
+  if (!isValidUploadFilename(filename)) {
+    return jsonResponse({ error: "Invalid filename" }, 400);
+  }
 
-  const bodyBytes = new Uint8Array(await req.arrayBuffer());
+  const body = await readBody(req, MAX_UPLOAD_BYTES);
+  if (!body.ok) return jsonResponse({ error: "Upload too large" }, 413);
 
-  console.log(
-    `[upload_image] slug=${slug} filename=${filename} content_type=${contentType} body_bytes=${bodyBytes.length}`,
-  );
+  const contentType = detectImageType(body.bytes);
+  if (!contentType || !extensionMatchesType(filename, contentType)) {
+    return jsonResponse({ error: "Unsupported or mismatched image type" }, 415);
+  }
+  const bodyBytes = body.bytes;
 
   const secrets = new SecretStore("secrets");
   const accessKeyId = await readSecret(secrets, "fos_access_key_id");
@@ -446,8 +548,6 @@ export async function uploadImage(req: Request): Promise<Response> {
 
   const host = `${region}.object.fastlystorage.app`;
   const path = `/${bucket}/${slug}/${filename}`;
-
-  console.log(`[upload_image] PUT https://${host}${path}`);
 
   const [datetime, date] = utcDatetime();
   const bodyHash = await sha256Hex(bodyBytes);
@@ -475,10 +575,6 @@ export async function uploadImage(req: Request): Promise<Response> {
     `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${credentialScope}, ` +
     `SignedHeaders=${signedHeaders}, Signature=${signature}`;
 
-  console.log(
-    `[upload_image] signing datetime=${datetime} scope=${credentialScope} body_hash=${bodyHash}`,
-  );
-
   const fosResp = await fetch(`https://${host}${path}`, {
     method: "PUT",
     headers: {
@@ -493,23 +589,16 @@ export async function uploadImage(req: Request): Promise<Response> {
     backend: "fastly-object-storage",
   });
 
-  console.log(`[upload_image] FOS response status=${fosResp.status}`);
-
   if (!fosResp.ok) {
-    const errBody = await fosResp.text();
-    console.error(`[upload_image] FOS error body: ${errBody}`);
-    throw new Error(`FOS PUT failed: ${fosResp.status} — ${errBody}`);
+    const errBody = clip(await fosResp.text());
+    logLine("error", `object storage PUT failed: status=${fosResp.status} body=${errBody}`);
+    throw new Error(`Object Storage PUT failed: ${fosResp.status}`);
   }
 
-  const imageUrl = `/images/${slug}/${filename}`;
-  console.log(`[upload_image] success url=${imageUrl}`);
-
-  const headers = noCacheHeaders();
-  headers.set("Content-Type", "application/json; charset=utf-8");
-  return new Response(JSON.stringify({ url: imageUrl }), {
-    status: 200,
-    headers,
-  });
+  const purged = await purgeKeys([`image-${slug}`]);
+  const result: Record<string, unknown> = { url: `/images/${slug}/${filename}` };
+  if (!purged) result.purge_failed = true;
+  return jsonResponse(result);
 }
 
 // ---------------------------------------------------------------------------
@@ -521,34 +610,34 @@ export async function sidebarPage(req: Request): Promise<Response> {
   if (authResp) return authResp;
 
   const sidebar = await readSidebar();
-
   const html = renderPage("admin-sidebar", {
-    is_admin: true,
-    sidebar,
+    ...adminVars("Sidebar"),
+    sidebar: { items: sidebarViewItems(sidebar) },
   });
-
-  const headers = noCacheHeaders();
-  headers.set("Content-Type", "text/html; charset=utf-8");
-  return new Response(html, { status: 200, headers });
+  return htmlResponse(html);
 }
 
 export async function updateSidebar(req: Request): Promise<Response> {
   const authResp = await requireAuth(req);
   if (authResp) return authResp;
 
-  const body = await req.text();
-  const sidebar: SidebarConfig = JSON.parse(body);
+  const body = await readBody(req, MAX_FORM_BYTES);
+  if (!body.ok) return jsonResponse({ error: "Request body too large" }, 413);
+  if (body.bytes.length > MAX_SIDEBAR_BYTES) {
+    return jsonResponse({ error: "Sidebar JSON must be at most 64 KiB" }, 400);
+  }
 
-  const store = new KVStore("content");
-  await store.put("_sidebar", JSON.stringify(sidebar));
+  let input: unknown;
+  try {
+    input = JSON.parse(new TextDecoder().decode(body.bytes));
+  } catch {
+    return jsonResponse({ error: "Invalid JSON" }, 400);
+  }
 
-  // Purge cache
-  await purgeKeys(["sidebar"]);
+  const result = validateSidebar(input);
+  if (!result.ok) return jsonResponse({ error: result.error }, 400);
 
-  const headers = noCacheHeaders();
-  headers.set("Content-Type", "application/json; charset=utf-8");
-  return new Response(JSON.stringify({ ok: true }), {
-    status: 200,
-    headers,
-  });
+  await writeSidebar(result.sidebar);
+  const purged = await purgeKeys(["sidebar", "post-index"]);
+  return jsonResponse(purged ? { ok: true } : { ok: true, purge_failed: true });
 }

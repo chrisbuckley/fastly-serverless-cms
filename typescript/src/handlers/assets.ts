@@ -1,59 +1,47 @@
-import { KVStore } from "fastly:kv-store";
+import styleCss from "../../../shared/css/style.css";
+import adminCss from "../../../shared/css/admin.css";
+import siteJs from "../../../shared/js/site.js";
+import adminJs from "../../../shared/js/admin.js";
+import fraunces from "../../../shared/fonts/fraunces.woff2";
+import dmSans from "../../../shared/fonts/dm-sans.woff2";
+import jetbrainsMono from "../../../shared/fonts/jetbrains-mono.woff2";
 
-import { CSS, ADMIN_JS } from "../templates.js";
-import { assetHeaders, imageHeaders } from "../cache.js";
+import { assetHeaders } from "../cache.js";
+import { notFound } from "../error.js";
 
-// ---------------------------------------------------------------------------
-// Static assets (CSS, JS)
-// ---------------------------------------------------------------------------
+interface Asset {
+  body: () => string | Uint8Array;
+  type: string;
+}
+
+// woff2 files are inlined by webpack as base64 data URIs and decoded on demand.
+function decodeDataUri(uri: string): Uint8Array {
+  const raw = atob(uri.slice(uri.indexOf(",") + 1));
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes;
+}
+
+const text = (s: string) => () => s;
+const font = (uri: string) => () => decodeDataUri(uri);
+
+const ASSETS: Record<string, Asset> = {
+  "style.css": { body: text(styleCss), type: "text/css; charset=utf-8" },
+  "admin.css": { body: text(adminCss), type: "text/css; charset=utf-8" },
+  "site.js": { body: text(siteJs), type: "application/javascript; charset=utf-8" },
+  "admin.js": { body: text(adminJs), type: "application/javascript; charset=utf-8" },
+  "fonts/fraunces.woff2": { body: font(fraunces), type: "font/woff2" },
+  "fonts/dm-sans.woff2": { body: font(dmSans), type: "font/woff2" },
+  "fonts/jetbrains-mono.woff2": { body: font(jetbrainsMono), type: "font/woff2" },
+};
 
 export function staticFile(path: string): Response {
-  let body: string;
-  let contentType: string;
-
-  switch (path) {
-    case "style.css":
-      body = CSS;
-      contentType = "text/css; charset=utf-8";
-      break;
-    case "admin.js":
-      body = ADMIN_JS;
-      contentType = "application/javascript; charset=utf-8";
-      break;
-    default:
-      return new Response("Asset not found\n", { status: 404 });
-  }
+  const asset = Object.prototype.hasOwnProperty.call(ASSETS, path)
+    ? ASSETS[path]
+    : undefined;
+  if (!asset) return notFound();
 
   const headers = assetHeaders(["assets"]);
-  headers.set("Content-Type", contentType);
-  return new Response(body, { status: 200, headers });
-}
-
-// ---------------------------------------------------------------------------
-// Image serving from KV Store
-// ---------------------------------------------------------------------------
-
-function contentTypeForImage(path: string): string {
-  if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
-  if (path.endsWith(".png")) return "image/png";
-  if (path.endsWith(".webp")) return "image/webp";
-  if (path.endsWith(".gif")) return "image/gif";
-  if (path.endsWith(".svg")) return "image/svg+xml";
-  return "application/octet-stream";
-}
-
-export async function image(_req: Request, path: string): Promise<Response> {
-  const store = new KVStore("images");
-  const entry = await store.get(`images/${path}`);
-  if (!entry) {
-    return new Response("Image not found\n", { status: 404 });
-  }
-
-  const bytes = await entry.arrayBuffer();
-  const ct = contentTypeForImage(path);
-  const slug = path.split("/")[0] || "unknown";
-
-  const headers = imageHeaders([`image-${slug}`]);
-  headers.set("Content-Type", ct);
-  return new Response(bytes, { status: 200, headers });
+  headers.set("Content-Type", asset.type);
+  return new Response(asset.body(), { status: 200, headers });
 }

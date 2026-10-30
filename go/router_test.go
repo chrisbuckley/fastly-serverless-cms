@@ -100,3 +100,16 @@ func TestRouteNotFound(t *testing.T) {
 	assertRoute(t, "POST", "/nonexistent", RouteNotFound, "")
 	assertRoute(t, "PATCH", "/admin/posts/foo", RouteNotFound, "")
 }
+
+func TestRouteAdminRebuildIndex(t *testing.T) {
+	assertRoute(t, "POST", "/admin/rebuild-index", RouteAdminRebuildIndex, "")
+	assertRoute(t, "GET", "/admin/rebuild-index", RouteNotFound, "")
+}
+
+func TestRouteHead(t *testing.T) {
+	assertRoute(t, "HEAD", "/", RouteHome, "")
+}
+
+func TestRouteNoPostSidebar(t *testing.T) {
+	assertRoute(t, "POST", "/admin/sidebar", RouteNotFound, "")
+}

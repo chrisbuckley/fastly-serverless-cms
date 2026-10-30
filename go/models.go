@@ -52,6 +52,7 @@ type PostMeta struct {
 	Excerpt       string     `json:"excerpt"`
 	Status        PostStatus `json:"status"`
 	CreatedAt     string     `json:"created_at"`
+	UpdatedAt     string     `json:"updated_at,omitempty"`
 	Tags          []string   `json:"tags"`
 	FeaturedImage *string    `json:"featured_image"`
 }
@@ -124,6 +125,7 @@ func (idx *PostIndex) Add(post *Post) {
 		Excerpt:       post.Excerpt,
 		Status:        post.Status,
 		CreatedAt:     post.CreatedAt,
+		UpdatedAt:     post.UpdatedAt,
 		Tags:          post.Tags,
 		FeaturedImage: image,
 	}

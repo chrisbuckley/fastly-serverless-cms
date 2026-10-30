@@ -4,77 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
-	"strings"
 
 	"github.com/fastly/compute-sdk-go/fsthttp"
-	"github.com/fastly/compute-sdk-go/geo"
-	"github.com/fastly/compute-sdk-go/kvstore"
 )
 
-func readIndex() (PostIndex, error) {
-	store, err := kvstore.Open("content")
+// loadPublicContext reads the index and sidebar shared by every public page.
+func loadPublicContext() (PostIndex, SidebarConfig, error) {
+	index, err := readIndex()
 	if err != nil {
-		return PostIndex{}, fmt.Errorf("open content store: %w", err)
+		return PostIndex{}, SidebarConfig{}, err
 	}
-	entry, err := store.Lookup("_index")
+	sidebar, err := readSidebar()
 	if err != nil {
-		return PostIndex{Posts: []PostMeta{}}, nil
+		return PostIndex{}, SidebarConfig{}, err
 	}
-	var index PostIndex
-	if err := json.Unmarshal([]byte(entry.String()), &index); err != nil {
-		return PostIndex{}, fmt.Errorf("parse index: %w", err)
-	}
-	return index, nil
-}
-
-func readSidebar() (SidebarConfig, error) {
-	store, err := kvstore.Open("content")
-	if err != nil {
-		return SidebarConfig{}, fmt.Errorf("open content store: %w", err)
-	}
-	entry, err := store.Lookup("_sidebar")
-	if err != nil {
-		return SidebarConfig{Items: []SidebarItem{}}, nil
-	}
-	var sidebar SidebarConfig
-	if err := json.Unmarshal([]byte(entry.String()), &sidebar); err != nil {
-		return SidebarConfig{}, fmt.Errorf("parse sidebar: %w", err)
-	}
-	return sidebar, nil
-}
-
-func geoContext(r *fsthttp.Request) (city, popCode string) {
-	city, popCode = "Edge", "CDN"
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return
-	}
-	g, err := geo.Lookup(ip)
-	if err != nil {
-		return
-	}
-	if g.City != "" && g.City != "?" {
-		city = g.City
-	}
-	if g.AsName != "" && g.AsName != "?" {
-		popCode = g.AsName
-	}
-	return
-}
-
-func xmlEscape(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	s = strings.ReplaceAll(s, `"`, "&quot;")
-	s = strings.ReplaceAll(s, "'", "&apos;")
-	return s
+	return index, sidebar, nil
 }
 
 func handleEdgeInfo(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
@@ -82,208 +27,190 @@ func handleEdgeInfo(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Re
 	if pop == "" {
 		pop = "local"
 	}
+	body, err := json.Marshal(map[string]string{"pop": pop})
+	if err != nil {
+		handleInternalError(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Surrogate-Control", "no-store")
 	w.WriteHeader(fsthttp.StatusOK)
-	fmt.Fprintf(w, `{"pop":"%s"}`, pop)
+	w.Write(body)
+}
+
+// pagePath is the canonical path for a list page.
+func pagePath(base string, page int) string {
+	if page <= 1 {
+		return base
+	}
+	return fmt.Sprintf("%s?page=%d", base, page)
 }
 
 func handleHome(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
-	index, err := readIndex()
-	if err != nil {
-		handleInternalError(w)
+	cfg := loadConfig(r.Host)
+	page, ok := ParsePage(r.URL.Query().Get("page"))
+	if !ok {
+		handleNotFound(w, r)
 		return
 	}
-	sidebar, err := readSidebar()
+	index, sidebar, err := loadPublicContext()
 	if err != nil {
-		handleInternalError(w)
+		logErrorf("home: %v", err)
+		handleInternalError(w, r)
 		return
 	}
-	popCity, popCode := geoContext(r)
-
-	data := map[string]interface{}{
-		"posts":    index.Published(),
-		"sidebar":  sidebar,
-		"all_tags": index.AllTags(),
-		"pop_city": popCity,
-		"pop_code": popCode,
-	}
-	html, err := renderPage("home", data)
-	if err != nil {
-		handleInternalError(w)
+	published := index.Published()
+	win, ok := Paginate(len(published), page, cfg.PageSize)
+	if !ok {
+		handleNotFound(w, r)
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	applyCacheHeaders(w, ttlFromConfig("page_ttl"), "post-index", "sidebar")
-	w.WriteHeader(fsthttp.StatusOK)
-	w.Write([]byte(html))
+	data := layoutVars(cfg, pagePath("/", page), "Home", siteDescription)
+	data["posts"] = postMetaView(published[win.Start:win.End])
+	data["sidebar"] = sidebarView(sidebar)
+	data["all_tags"] = index.AllTags()
+	data["pagination"] = paginationView(win, "/")
+	writeHTMLPage(w, r, cfg, "home", data, "post-index", "sidebar")
 }
 
 func handlePost(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request, slug string) {
-	store, err := kvstore.Open("content")
+	if !ValidSlug(slug) {
+		handleNotFound(w, r)
+		return
+	}
+	cfg := loadConfig(r.Host)
+	store, err := openContent()
 	if err != nil {
-		handleInternalError(w)
+		logErrorf("post: %v", err)
+		handleInternalError(w, r)
 		return
 	}
-	entry, err := store.Lookup("post:" + slug)
+	post, found, err := readPost(store, slug)
 	if err != nil {
-		handleNotFound(w)
+		logErrorf("post %s: %v", slug, err)
+		handleInternalError(w, r)
 		return
 	}
-	var post Post
-	if err := json.Unmarshal([]byte(entry.String()), &post); err != nil {
-		handleInternalError(w)
+	if !found || post.Status == StatusDraft {
+		handleNotFound(w, r)
 		return
 	}
-	if post.Status == StatusDraft {
-		handleNotFound(w)
+	index, sidebar, err := loadPublicContext()
+	if err != nil {
+		logErrorf("post %s: %v", slug, err)
+		handleInternalError(w, r)
 		return
 	}
 
-	index, err := readIndex()
-	if err != nil {
-		handleInternalError(w)
-		return
-	}
-	sidebar, err := readSidebar()
-	if err != nil {
-		handleInternalError(w)
-		return
-	}
-	popCity, popCode := geoContext(r)
-	renderedContent := RewriteImages(RenderMarkdown(post.Content))
-	canonicalURL := "/post/" + slug
+	path := "/post/" + slug
+	canonical := cfg.SiteURL + path
+	image := absoluteURL(cfg.SiteURL, firstNonEmpty(derefString(post.FeaturedImage), firstContentImage(post.Content)))
+	description := firstNonEmpty(post.Excerpt, siteDescription)
 
-	data := map[string]interface{}{
-		"slug":             post.Slug,
-		"title":            post.Title,
-		"content":          post.Content,
-		"excerpt":          post.Excerpt,
-		"created_at":       post.CreatedAt,
-		"updated_at":       post.UpdatedAt,
-		"tags":             post.Tags,
-		"featured_image":   post.FeaturedImage,
-		"author":           post.Author,
-		"rendered_content": renderedContent,
-		"canonical_url":    canonicalURL,
-		"page_title":       post.Title,
-		"og_title":         post.Title,
-		"og_description":   post.Excerpt,
-		"og_type":          "article",
-		"og_image":         post.FeaturedImage,
-		"og_url":           canonicalURL,
-		"sidebar":          sidebar,
-		"all_tags":         index.AllTags(),
-		"pop_city":         popCity,
-		"pop_code":         popCode,
-	}
-	html, err := renderPage("post", data)
-	if err != nil {
-		handleInternalError(w)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	applyCacheHeaders(w, ttlFromConfig("page_ttl"), "post-"+slug, "sidebar")
-	w.WriteHeader(fsthttp.StatusOK)
-	w.Write([]byte(html))
+	data := layoutVars(cfg, path, post.Title, description)
+	data["og_type"] = "article"
+	data["og_image"] = image
+	data["slug"] = post.Slug
+	data["title"] = post.Title
+	data["content"] = post.Content
+	data["excerpt"] = post.Excerpt
+	data["created_at"] = post.CreatedAt
+	data["updated_at"] = post.UpdatedAt
+	data["tags"] = append([]string{}, post.Tags...)
+	data["featured_image"] = derefString(post.FeaturedImage)
+	data["author"] = post.Author
+	data["rendered_content"] = RewriteImages(RenderMarkdown(post.Content))
+	data["json_ld"] = buildJSONLD(cfg, post, canonical, image)
+	data["share_url_encoded"] = percentEncode(canonical)
+	data["share_title_encoded"] = percentEncode(post.Title)
+	data["sidebar"] = sidebarView(sidebar)
+	data["all_tags"] = index.AllTags()
+	writeHTMLPage(w, r, cfg, "post", data, "post-"+slug, "sidebar")
 }
 
 func handleTag(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request, tagName string) {
-	index, err := readIndex()
-	if err != nil {
-		handleInternalError(w)
+	if !tagRe.MatchString(tagName) {
+		handleNotFound(w, r)
 		return
 	}
-	sidebar, err := readSidebar()
-	if err != nil {
-		handleInternalError(w)
+	cfg := loadConfig(r.Host)
+	page, ok := ParsePage(r.URL.Query().Get("page"))
+	if !ok {
+		handleNotFound(w, r)
 		return
 	}
-	popCity, popCode := geoContext(r)
-
-	data := map[string]interface{}{
-		"tag":        tagName,
-		"posts":      index.ByTag(tagName),
-		"sidebar":    sidebar,
-		"all_tags":   index.AllTags(),
-		"pop_city":   popCity,
-		"pop_code":   popCode,
-		"page_title": fmt.Sprintf("Posts tagged \"%s\"", tagName),
-	}
-	html, err := renderPage("tag", data)
+	index, sidebar, err := loadPublicContext()
 	if err != nil {
-		handleInternalError(w)
+		logErrorf("tag %s: %v", tagName, err)
+		handleInternalError(w, r)
+		return
+	}
+	tagged := index.ByTag(tagName)
+	win, ok := Paginate(len(tagged), page, cfg.PageSize)
+	if !ok {
+		handleNotFound(w, r)
 		return
 	}
 
+	base := "/tag/" + tagName
+	description := fmt.Sprintf("Posts tagged \"%s\"", tagName)
+	data := layoutVars(cfg, pagePath(base, page), description, description)
+	data["tag"] = tagName
+	data["posts"] = postMetaView(tagged[win.Start:win.End])
+	data["sidebar"] = sidebarView(sidebar)
+	data["all_tags"] = index.AllTags()
+	data["pagination"] = paginationView(win, base)
+	writeHTMLPage(w, r, cfg, "tag", data, "post-index", "sidebar", "tag-"+tagName)
+}
+
+// writeHTMLPage renders a cacheable public page.
+func writeHTMLPage(w fsthttp.ResponseWriter, r *fsthttp.Request, cfg Config, name string, data map[string]interface{}, keys ...string) {
+	html, err := renderPage(name, data)
+	if err != nil {
+		logErrorf("render %s: %v", name, err)
+		handleInternalError(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	applyCacheHeaders(w, ttlFromConfig("page_ttl"), "post-index", "sidebar")
+	applyPageCache(w, cfg, keys...)
 	w.WriteHeader(fsthttp.StatusOK)
 	w.Write([]byte(html))
 }
 
 func handleFeed(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
+	cfg := loadConfig(r.Host)
 	index, err := readIndex()
 	if err != nil {
-		handleInternalError(w)
+		logErrorf("feed: %v", err)
+		handleInternalError(w, r)
 		return
 	}
-	published := index.Published()
-	limit := 20
-	if len(published) < limit {
-		limit = len(published)
-	}
-
-	var xml strings.Builder
-	xml.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<rss version=\"2.0\">\n<channel>\n  <title>edge/cms</title>\n  <description>A CMS running entirely on Fastly Compute</description>\n  <link>/</link>\n")
-	for _, post := range published[:limit] {
-		xml.WriteString("  <item>\n")
-		fmt.Fprintf(&xml, "    <title>%s</title>\n", xmlEscape(post.Title))
-		fmt.Fprintf(&xml, "    <link>/post/%s</link>\n", post.Slug)
-		fmt.Fprintf(&xml, "    <guid isPermaLink=\"true\">/post/%s</guid>\n", post.Slug)
-		fmt.Fprintf(&xml, "    <description>%s</description>\n", xmlEscape(post.Excerpt))
-		fmt.Fprintf(&xml, "    <pubDate>%s</pubDate>\n", post.CreatedAt)
-		xml.WriteString("  </item>\n")
-	}
-	xml.WriteString("</channel>\n</rss>\n")
-
 	w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
-	applyCacheHeaders(w, ttlFromConfig("page_ttl"), "post-index")
+	applyFeedCache(w, cfg)
 	w.WriteHeader(fsthttp.StatusOK)
-	w.Write([]byte(xml.String()))
+	w.Write([]byte(buildFeed(cfg, index.Published())))
 }
 
 func handleSitemap(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
+	cfg := loadConfig(r.Host)
 	index, err := readIndex()
 	if err != nil {
-		handleInternalError(w)
+		logErrorf("sitemap: %v", err)
+		handleInternalError(w, r)
 		return
 	}
-
-	var xml strings.Builder
-	xml.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n  <url>\n    <loc>/</loc>\n  </url>\n")
-	for _, post := range index.Published() {
-		xml.WriteString("  <url>\n")
-		fmt.Fprintf(&xml, "    <loc>/post/%s</loc>\n", post.Slug)
-		if len(post.CreatedAt) >= 10 {
-			fmt.Fprintf(&xml, "    <lastmod>%s</lastmod>\n", post.CreatedAt[:10])
-		}
-		xml.WriteString("  </url>\n")
-	}
-	xml.WriteString("</urlset>\n")
-
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
-	applyCacheHeaders(w, ttlFromConfig("page_ttl"), "post-index")
+	applyFeedCache(w, cfg)
 	w.WriteHeader(fsthttp.StatusOK)
-	w.Write([]byte(xml.String()))
+	w.Write([]byte(buildSitemap(cfg, index)))
 }
 
 func handleRobots(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
+	cfg := loadConfig(r.Host)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	applyCacheHeaders(w, ttlFromConfig("page_ttl"), "post-index")
+	applyFeedCache(w, cfg)
 	w.WriteHeader(fsthttp.StatusOK)
-	w.Write([]byte("User-agent: *\nAllow: /\nSitemap: /sitemap.xml\n"))
+	w.Write([]byte(robotsTxt(cfg.SiteURL)))
 }

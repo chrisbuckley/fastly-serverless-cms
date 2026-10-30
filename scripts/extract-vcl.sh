@@ -112,6 +112,15 @@ PRELUDE="$OUT_DIR/prelude.vcl"
     done
 } >"$PRELUDE"
 
+# Subroutine snippets may use objects (ratecounters, penaltyboxes, tables)
+# declared by `init` snippets, so include those declarations ahead of them.
+INIT_DECLS="$OUT_DIR/init-decls.vcl"
+: >"$INIT_DECLS"
+for f in "$SNIP_DIR"/*.init.vcl; do
+    [ -e "$f" ] || continue
+    cat "$f" >>"$INIT_DECLS"
+done
+
 # --- 4. Wrap each snippet in its subroutine --------------------------------
 shopt -s nullglob
 n=0
@@ -126,7 +135,7 @@ for f in "$SNIP_DIR"/*.vcl; do
         ;;
     recv | hash | hit | miss | pass | fetch | error | deliver | log)
         {
-            cat "$PRELUDE"
+            cat "$PRELUDE" "$INIT_DECLS"
             printf 'sub vcl_%s {\n  #FASTLY %s\n\n' "$type" "$type"
             cat "$f"
             case "$type" in

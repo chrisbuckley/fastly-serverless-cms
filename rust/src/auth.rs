@@ -129,7 +129,7 @@ mod tests {
     use super::*;
 
     const KEY: &[u8] = b"test-key";
-    const NONCE: &str = "0123456789abcdef0123456789abcdef";
+    const NONCE: &str = "0123456789abcdef0123456789abcdef"; // pragma: allowlist secret
     const NOW: u64 = 1_800_000_000;
 
     #[test]

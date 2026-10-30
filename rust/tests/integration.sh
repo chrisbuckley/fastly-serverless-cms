@@ -640,18 +640,21 @@ expect_status "update with invalid status -> 400" 400
 section "12. Sidebar (contract §5)"
 # ---------------------------------------------------------------------------
 
+# Categories only render in the admin sidebar editor; the public sidebar shows links.
 req GET /
-expect_body "fixture sidebar: category rendered" "Getting Started"
 expect_body "fixture sidebar: link rendered" "https://github.com"
 
 req GET /admin/sidebar
 expect_status "admin sidebar page returns 200" 200
 expect_header "admin sidebar: no-store" Cache-Control 'no-store'
+expect_body "fixture sidebar: category in admin editor" "Getting Started"
 
 put_sidebar '{"items":[{"type":"category","label":"QA Category","slug":"qa-category","children":["hello-world"]},{"type":"link","label":"QA Link","url":"https://example.com/qa-link","icon":"link"}]}'
 expect_status "PUT sidebar with category + link" 200 204
+req GET /admin/sidebar
+expect_body "sidebar editor: category present" "QA Category"
+expect_body "sidebar editor: category children preserved" 'data-children="hello-world"'
 req GET /
-expect_body "sidebar render: category present" "QA Category"
 expect_body "sidebar render: link url present" "https://example.com/qa-link"
 expect_body "sidebar render: link label present" "QA Link"
 
@@ -670,7 +673,7 @@ expect_status "PUT sidebar with malformed JSON -> 400" 400
 
 req GET /
 expect_no_body "rejected sidebar updates did not persist javascript: URLs" "javascript:"
-expect_body "rejected sidebar updates left the previous sidebar in place" "QA Category"
+expect_body "rejected sidebar updates left the previous sidebar in place" "https://example.com/qa-link"
 
 put_sidebar '{"items":[{"type":"link","label":"Unknown Fields","url":"/about","icon":"link","bogus":"dropped"}],"also_unknown":true}'
 expect_status "PUT sidebar with unknown fields is accepted" 200 204

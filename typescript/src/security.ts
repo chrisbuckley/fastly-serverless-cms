@@ -2,6 +2,7 @@ import { SecretStore } from "fastly:secret-store";
 import { RateCounter, PenaltyBox } from "fastly:edge-rate-limiter";
 
 import { constantTimeEqual } from "./auth.js";
+import { expandIpv6 } from "./privacy.js";
 import { logLine, describeError } from "./logging.js";
 
 const CSP =
@@ -59,8 +60,19 @@ const LOGIN_LIMIT = 5;
 const LOGIN_WINDOW_SECONDS = 60;
 const LOGIN_PENALTY_MINUTES = 15;
 
+// IPv6 clients control a whole /64, so key the limiter on the prefix.
+export function rateLimitKey(ip: string): string {
+  const mapped = ip.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
+  if (mapped) return mapped[1];
+  if (!ip.includes(":")) return ip;
+  const groups = expandIpv6(ip.toLowerCase());
+  if (!groups) return ip;
+  const prefix = groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, ""));
+  return `${prefix.join(":")}::/64`;
+}
+
 export function loginRateLimited(ip: string): boolean {
-  const key = ip || "unknown";
+  const key = rateLimitKey(ip) || "unknown";
   try {
     const counter = new RateCounter("login_attempts");
     const penalty = new PenaltyBox("login_penalty");

@@ -65,7 +65,7 @@ describe("buildJsonLd", () => {
   });
   it("never contains a literal </ sequence", () => {
     expect(ld).not.toContain("</");
-    expect(ld).toContain("<\\/script>");
+    expect(ld).toContain("\\u003c/script\\u003e");
   });
   it("omits image when none and falls back dateModified to createdAt", () => {
     const parsed = JSON.parse(

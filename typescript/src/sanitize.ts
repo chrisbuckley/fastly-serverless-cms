@@ -76,8 +76,9 @@ function isAllowedImgSrc(raw: string): boolean {
 
 function isAllowedEmbed(raw: string): boolean {
   try {
-    const u = new URL(friendlyAttrValue(raw).trim());
-    return u.protocol === "https:" && EMBED_HOSTS.has(u.hostname);
+    const value = friendlyAttrValue(raw).trim();
+    const u = new URL(value);
+    return /^https:\/\//.test(value) && u.protocol === "https:" && EMBED_HOSTS.has(u.hostname);
   } catch {
     return false;
   }
@@ -95,6 +96,7 @@ function digitsOnly(value: string): boolean {
 
 export function sanitizeHtml(html: string): string {
   let iframeDropped = false;
+  let openIframes = 0;
 
   const filter = new FilterXSS({
     whiteList: ALLOWED_TAGS,
@@ -103,10 +105,16 @@ export function sanitizeHtml(html: string): string {
     css: false,
     onTag(tag, tagHtml, info) {
       if (tag === "iframe") {
-        if (info.isClosing) return iframeDropped ? "" : "</iframe>";
+        if (info.isClosing) {
+          if (iframeDropped || openIframes === 0) return "";
+          openIframes--;
+          return "</iframe>";
+        }
         const src = attrFromTag(tagHtml, "src");
         iframeDropped = src === null || !isAllowedEmbed(src);
-        return iframeDropped ? "" : undefined;
+        if (iframeDropped) return "";
+        openIframes++;
+        return undefined;
       }
       if (tag === "input") {
         if (info.isClosing) return "";
@@ -157,5 +165,5 @@ export function sanitizeHtml(html: string): string {
     },
   });
 
-  return filter.process(html);
+  return filter.process(html) + "</iframe>".repeat(openIframes);
 }

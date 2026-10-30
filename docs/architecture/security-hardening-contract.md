@@ -108,7 +108,8 @@ All three backends' `tests/cache-config.json`:
 ## 7. Caching
 
 - Pages (home, post, tag): `Surrogate-Control: max-age=<page_ttl>, stale-while-revalidate=60, stale-if-error=86400`,
-  `Cache-Control: max-age=<page_ttl>, public` (VCL rewrites HTML browser TTL), surrogate keys as today
+  `Cache-Control: max-age=<page_ttl>, public` from Compute; the VCL `html-revalidate` snippet rewrites the
+  browser-facing header for public HTML to `public, no-cache`, so browsers always revalidate. Surrogate keys as today
   (`post-index`, `post-<slug>`, `tag-<tag>`, `sidebar` …).
 - feed.xml, sitemap.xml, robots.txt: same Surrogate-Control; `Cache-Control: public, max-age=300`; key `post-index`.
 - Assets `/assets/*`: `Cache-Control: public, max-age=31536000, immutable`; Surrogate-Control max-age=asset_ttl.

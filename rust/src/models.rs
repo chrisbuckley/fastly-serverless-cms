@@ -256,7 +256,9 @@ mod tests {
 
     #[test]
     fn index_without_updated_at_still_deserializes() {
-        let json = include_str!("../../shared/test-fixtures/sample-index.json");
+        let json = r#"{"posts":[{"slug":"hello-world","title":"Hello World","excerpt":"",
+            "status":"published","created_at":"2026-05-20T14:30:00Z","tags":[],
+            "featured_image":null}]}"#;
         let index: PostIndex = serde_json::from_str(json).unwrap();
         assert!(index.posts[0].updated_at.is_none());
         assert_eq!(index.posts[0].last_modified(), "2026-05-20T14:30:00Z");

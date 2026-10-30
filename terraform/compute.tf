@@ -31,7 +31,7 @@ resource "fastly_service_compute" "app" {
     resource_id = fastly_secretstore.secrets.id
   }
 
-  # Config Store for cache TTLs — change values live without redeploying
+  # Config Store for site_url, cache TTLs and page_size — change values live without redeploying
   resource_link {
     name        = "cache_config"
     resource_id = fastly_configstore.cache_config.id

@@ -56,9 +56,11 @@ resource "random_password" "origin_auth_token" {
 }
 
 # ---------------------------------------------------------------------------
-# Config Store — cache TTLs (page_ttl, asset_ttl, image_ttl)
+# Config Store — site_url, cache TTLs (page_ttl, asset_ttl, image_ttl),
+#                page_size
 #
-# Values are seconds. Change live without deploy via:
+# TTLs are seconds. Edits made outside Terraform are reverted on the next
+# apply (manage_entries = true). Change live without deploy via:
 #   fastly config-store-entry update --store-id=<id> --key=page_ttl --value=86400
 # ---------------------------------------------------------------------------
 
@@ -74,9 +76,11 @@ resource "fastly_configstore_entries" "cache_config" {
   manage_entries = true
 
   entries = {
-    page_ttl  = "2592000"
+    site_url  = "https://${var.domain}" # absolute, no trailing slash — canonical URLs, CSRF Origin check
+    page_ttl  = "86400"
     asset_ttl = "31536000"
     image_ttl = "31536000"
+    page_size = "10" # posts per page on home and tag listings
   }
 }
 

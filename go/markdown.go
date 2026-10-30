@@ -60,6 +60,13 @@ func SanitizeHTML(unsafe string) string {
 }
 
 func postSanitize(h string) string {
+	// bluemonday treats iframe content as raw text (escaped), so any literal
+	// <iframe / </iframe> in its output is a real tag and only the last iframe
+	// can be unclosed. Close it so it cannot swallow the rest of the page; the
+	// src check below then drops it if it has no allowed src.
+	if missing := strings.Count(h, "<iframe") - strings.Count(h, "</iframe>"); missing > 0 {
+		h += strings.Repeat("</iframe>", missing)
+	}
 	h = iframeTagRe.ReplaceAllStringFunc(h, func(tag string) string {
 		if strings.Contains(tag, ` src="`) {
 			return tag

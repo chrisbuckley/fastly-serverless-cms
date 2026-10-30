@@ -127,6 +127,34 @@ func TestRewriteImagesMalformedNoClose(t *testing.T) {
 	// if we got here, no panic
 }
 
+func TestSanitizeBalancesUnclosedIframe(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		want    string
+		notWant string
+	}{
+		{"unclosed allowed iframe closed", `<iframe src="https://www.youtube.com/embed/x">`, `src="https://www.youtube.com/embed/x"`, ""},
+		{"unclosed iframe with trailing content", "<iframe src=\"https://www.youtube.com/embed/x\">\n\nafter **bold**", `src="https://www.youtube.com/embed/x"`, ""},
+		{"closed then unclosed", "<iframe src=\"https://www.youtube.com/embed/x\"></iframe>\n\n<iframe src=\"https://player.vimeo.com/video/1\">", "player.vimeo.com", ""},
+		{"unclosed iframe without src dropped", `<iframe width="560">`, "", "<iframe"},
+	}
+	for _, tt := range tests {
+		got := RenderMarkdown(tt.in)
+		opens := strings.Count(got, "<iframe")
+		closes := strings.Count(got, "</iframe>")
+		if opens != closes {
+			t.Errorf("%s: unbalanced iframe tags (%d open, %d close):\n%s", tt.name, opens, closes, got)
+		}
+		if tt.want != "" && !strings.Contains(got, tt.want) {
+			t.Errorf("%s: output missing %q:\n%s", tt.name, tt.want, got)
+		}
+		if tt.notWant != "" && strings.Contains(got, tt.notWant) {
+			t.Errorf("%s: output unexpectedly contains %q:\n%s", tt.name, tt.notWant, got)
+		}
+	}
+}
+
 func TestSanitizePolicy(t *testing.T) {
 	tests := []struct {
 		name    string

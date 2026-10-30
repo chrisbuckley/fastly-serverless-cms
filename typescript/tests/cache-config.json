@@ -1,5 +1,7 @@
 {
-  "page_ttl": "2592000",
+  "site_url": "http://127.0.0.1:7676",
+  "page_ttl": "86400",
   "asset_ttl": "31536000",
-  "image_ttl": "31536000"
+  "image_ttl": "31536000",
+  "page_size": "10"
 }

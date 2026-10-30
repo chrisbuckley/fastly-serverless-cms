@@ -20,76 +20,82 @@ export type Route =
   | { kind: "admin-upload-image" }
   | { kind: "admin-sidebar" }
   | { kind: "admin-update-sidebar" }
+  | { kind: "admin-rebuild-index" }
   | { kind: "not-found" };
 
+const NOT_FOUND: Route = { kind: "not-found" };
+
+function segment(path: string, prefix: string, suffix = ""): string | null {
+  if (!path.startsWith(prefix) || !path.endsWith(suffix)) return null;
+  const rest = path.slice(prefix.length, path.length - suffix.length);
+  return rest === "" || rest.includes("/") ? null : rest;
+}
+
+function matchGet(path: string): Route {
+  switch (path) {
+    case "/":
+      return { kind: "home" };
+    case "/api/edge-info":
+      return { kind: "edge-info" };
+    case "/feed.xml":
+      return { kind: "feed" };
+    case "/sitemap.xml":
+      return { kind: "sitemap" };
+    case "/robots.txt":
+      return { kind: "robots" };
+    case "/admin/login":
+      return { kind: "admin-login" };
+    case "/admin":
+      return { kind: "admin-dashboard" };
+    case "/admin/posts/new":
+      return { kind: "admin-new-post" };
+    case "/admin/sidebar":
+      return { kind: "admin-sidebar" };
+  }
+
+  const post = segment(path, "/post/");
+  if (post) return { kind: "post", slug: post };
+  const tag = segment(path, "/tag/");
+  if (tag) return { kind: "tag", tag };
+  if (path.startsWith("/images/")) {
+    return { kind: "image", path: path.slice("/images/".length) };
+  }
+  if (path.startsWith("/assets/")) {
+    return { kind: "asset", path: path.slice("/assets/".length) };
+  }
+  const edit = segment(path, "/admin/posts/", "/edit");
+  if (edit) return { kind: "admin-edit-post", slug: edit };
+
+  return NOT_FOUND;
+}
+
 export function matchRoute(method: string, path: string): Route {
-  if (method === "GET") {
-    switch (path) {
-      case "/":
-        return { kind: "home" };
-      case "/api/edge-info":
-        return { kind: "edge-info" };
-      case "/feed.xml":
-        return { kind: "feed" };
-      case "/sitemap.xml":
-        return { kind: "sitemap" };
-      case "/robots.txt":
-        return { kind: "robots" };
-      case "/admin/login":
-        return { kind: "admin-login" };
-      case "/admin":
-        return { kind: "admin-dashboard" };
-      case "/admin/posts/new":
-        return { kind: "admin-new-post" };
-      case "/admin/sidebar":
-        return { kind: "admin-sidebar" };
-    }
+  const adminPost = segment(path, "/admin/posts/");
 
-    if (path.startsWith("/post/"))
-      return { kind: "post", slug: path.slice("/post/".length) };
-    if (path.startsWith("/tag/"))
-      return { kind: "tag", tag: path.slice("/tag/".length) };
-    if (path.startsWith("/images/"))
-      return { kind: "image", path: path.slice("/images/".length) };
-    if (path.startsWith("/assets/"))
-      return { kind: "asset", path: path.slice("/assets/".length) };
-    if (path.startsWith("/admin/posts/") && path.endsWith("/edit")) {
-      const slug = path.slice("/admin/posts/".length, -"/edit".length);
-      return { kind: "admin-edit-post", slug };
-    }
-
-    return { kind: "not-found" };
+  switch (method) {
+    case "GET":
+    case "HEAD":
+      return matchGet(path);
+    case "POST":
+      switch (path) {
+        case "/admin/login":
+          return { kind: "admin-login-post" };
+        case "/admin/logout":
+          return { kind: "admin-logout" };
+        case "/admin/posts":
+          return { kind: "admin-create-post" };
+        case "/admin/images":
+          return { kind: "admin-upload-image" };
+        case "/admin/rebuild-index":
+          return { kind: "admin-rebuild-index" };
+      }
+      return adminPost ? { kind: "admin-update-post", slug: adminPost } : NOT_FOUND;
+    case "PUT":
+      if (path === "/admin/sidebar") return { kind: "admin-update-sidebar" };
+      return adminPost ? { kind: "admin-update-post", slug: adminPost } : NOT_FOUND;
+    case "DELETE":
+      return adminPost ? { kind: "admin-delete-post", slug: adminPost } : NOT_FOUND;
+    default:
+      return NOT_FOUND;
   }
-
-  if (method === "POST") {
-    switch (path) {
-      case "/admin/login":
-        return { kind: "admin-login-post" };
-      case "/admin/logout":
-        return { kind: "admin-logout" };
-      case "/admin/posts":
-        return { kind: "admin-create-post" };
-      case "/admin/images":
-        return { kind: "admin-upload-image" };
-      case "/admin/sidebar":
-        return { kind: "admin-update-sidebar" };
-    }
-
-    if (path.startsWith("/admin/posts/"))
-      return { kind: "admin-update-post", slug: path.slice("/admin/posts/".length) };
-  }
-
-  if (method === "PUT") {
-    if (path === "/admin/sidebar")
-      return { kind: "admin-update-sidebar" };
-    if (path.startsWith("/admin/posts/"))
-      return { kind: "admin-update-post", slug: path.slice("/admin/posts/".length) };
-  }
-
-  if (method === "DELETE") {
-    if (path.startsWith("/admin/posts/"))
-      return { kind: "admin-delete-post", slug: path.slice("/admin/posts/".length) };
-  }
-
-  return { kind: "not-found" };
 }

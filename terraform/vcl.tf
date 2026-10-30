@@ -101,10 +101,9 @@ resource "fastly_service_vcl" "cdn" {
   # Private dictionary — Object Storage credentials for SigV4 signing in VCL.
   # write_only = true means values are encrypted at rest and not readable via
   # the API or UI, but are accessible in VCL via table.lookup().
-  # Populate after apply:
-  #   fastly service-dictionary-item create --service-id=<vcl-sid> \
-  #     --dictionary-id=<dict-id> --key=access_key_id --value=<AKI>
-  #   fastly service-dictionary-item create ... --key=secret_key --value=<SK>
+  # Holds the READ-ONLY Object Storage key (fos_readonly). Terraform cannot
+  # manage items in private dictionaries — populate after apply with the
+  # command in the next_steps output (keeps the secret off the command line).
   # ---------------------------------------------------------------------------
   dictionary {
     name       = "edge_cms_fos_creds"
@@ -120,8 +119,8 @@ resource "fastly_service_vcl" "cdn" {
   }
 
   # Backend selector — set active_backend to "rust" (default), "go", or "ts".
-  # Switch live without deploy: fastly dictionary-item update ...
-  # Example: fastly dictionary-item update <dict-id> --key=active_backend --value=ts
+  # Items are managed by fastly_service_dictionary_items.config below, so a
+  # live switch (see next_steps) is reverted on the next apply.
   dictionary {
     name = "edge_cms_config"
   }

@@ -62,23 +62,33 @@ output "origin_auth_token" {
   sensitive   = true
 }
 
-# ---------------------------------------------------------------------------
-# Squarespace DNS — routing CNAMEs
-# Add these to route traffic to Fastly.
-# j.sni.global.fastly.net is the correct SNI endpoint for TLS subscriptions.
-# ---------------------------------------------------------------------------
-
 output "config_dict_id" {
   description = "Config dictionary ID — set active_backend to rust/go/ts"
   value       = { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_config"]
 }
 
-output "squarespace_dns_routing_cnames" {
-  description = "Add these CNAME records in Squarespace DNS — wildcard covers all subdomains"
-  value = {
-    "${var.domain}."   = "CNAME  j.sni.global.fastly.net"
-    "*.${var.domain}." = "CNAME  j.sni.global.fastly.net"
-  }
+# ---------------------------------------------------------------------------
+# DNS — explicit routing records (no wildcard)
+# One record per hostname that a Fastly service actually serves, so a
+# dangling wildcard can't route arbitrary subdomains to Fastly.
+# j.sni.global.fastly.net is the SNI endpoint for TLS subscriptions.
+# If var.domain is a zone apex, a CNAME is not allowed there: use your DNS
+# provider's ALIAS/ANAME record or Fastly's documented apex A records.
+# ---------------------------------------------------------------------------
+
+locals {
+  dns_routing_records = merge(
+    {
+      "${var.domain}."     = "CNAME  j.sni.global.fastly.net" # VCL CDN service (public)
+      "app.${var.domain}." = "CNAME  j.sni.global.fastly.net" # Rust Compute service (origin for VCL)
+    },
+    { for k, v in local.optional_compute_backends : "${v.host}." => "CNAME  j.sni.global.fastly.net" },
+  )
+}
+
+output "dns_routing_records" {
+  description = "DNS records to create (explicit hostnames only, no wildcard)"
+  value       = local.dns_routing_records
 }
 
 # ---------------------------------------------------------------------------
@@ -127,9 +137,10 @@ output "next_steps" {
 
     ── DNS (Squarespace) ────────────────────────────────────────────────────
 
-    Routing CNAMEs (wildcard covers all subdomains):
-      ${var.domain}           →  j.sni.global.fastly.net
-      *.${var.domain}         →  j.sni.global.fastly.net
+    Routing records (explicit hostnames, no wildcard — see dns_routing_records):
+%{for host, rec in local.dns_routing_records~}
+      ${host}  ${rec}
+%{endfor~}
 
     TLS: single wildcard cert covers ${var.domain} + *.${var.domain}
       terraform output tls_provisioning_commands   # shows CLI command
@@ -189,7 +200,8 @@ output "next_steps" {
     fastly service-dictionary-item create --service-id=$VCL_SID --dictionary-id=$CONFIG_DICT \
       --key=active_backend --value=rust
 
-    # Switch to Go (no deploy needed — takes effect immediately):
+    # Switch to Go (needs var.go_backend_host set; otherwise falls back to Rust).
+    # No deploy needed — takes effect immediately:
     fastly service-dictionary-item update --service-id=$VCL_SID --dictionary-id=$CONFIG_DICT \
       --key=active_backend --value=go
 

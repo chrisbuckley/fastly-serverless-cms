@@ -15,6 +15,18 @@ variable "compute_go_package_path" {
   default     = "../go/pkg/edge-cms-go.tar.gz"
 }
 
+variable "go_backend_host" {
+  description = "Hostname of the Go Compute service (e.g. app-go.edge-cms.example.com). Empty (default) = no Go backend on the VCL service; active_backend=go then falls back to Rust."
+  type        = string
+  default     = ""
+}
+
+variable "ts_backend_host" {
+  description = "Hostname of the TypeScript Compute service (e.g. app-ts.edge-cms.example.com). Empty (default) = no TS backend on the VCL service; active_backend=ts then falls back to Rust."
+  type        = string
+  default     = ""
+}
+
 variable "fos_region" {
   description = "Fastly Object Storage region (us-east-1, eu-central-1, ap-southeast-1, etc.)"
   type        = string

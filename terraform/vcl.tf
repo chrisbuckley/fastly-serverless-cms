@@ -11,6 +11,17 @@
 #   - (Optional) NGWAF edge deploy — enable product manually after apply
 # ---------------------------------------------------------------------------
 
+locals {
+  # Optional VCL backends for the Go / TypeScript Compute services, keyed by
+  # the active_backend value that selects them.
+  optional_compute_backends = {
+    for k, v in {
+      go = { name = "edge-cms-compute-go", vcl_backend = "F_edge_cms_compute_go", host = var.go_backend_host }
+      ts = { name = "edge-cms-compute-ts", vcl_backend = "F_edge_cms_compute_ts", host = var.ts_backend_host }
+    } : k => v if v.host != ""
+  }
+}
+
 resource "fastly_service_vcl" "cdn" {
   name    = "edge-cms"
   comment = "Edge CMS CDN — VCL layer — managed by Terraform"
@@ -22,8 +33,11 @@ resource "fastly_service_vcl" "cdn" {
 
   # ---------------------------------------------------------------------------
   # Backends: Compute app services (one per language implementation)
-  # The active backend is selected by the edge_cms_config dictionary.
-  # Default: Rust. Switch with: fastly dictionary-item update --key=active_backend --value=go|ts
+  # The active backend is selected by active_backend in edge_cms_config.
+  # Rust (app.<domain>) always exists. Go / TS backends exist only when
+  # var.go_backend_host / var.ts_backend_host are set; selecting one that
+  # isn't configured falls back to Rust (see backend-select snippets).
+  # request_condition "snippet-routed" is never true: routing is done in VCL.
   # ---------------------------------------------------------------------------
   backend {
     name              = "edge-cms-compute"
@@ -42,38 +56,24 @@ resource "fastly_service_vcl" "cdn" {
     request_condition = "snippet-routed"
   }
 
-  backend {
-    name              = "edge-cms-compute-go"
-    address           = "app-go.${var.domain}"
-    port              = 443
-    use_ssl           = true
-    ssl_cert_hostname = "app-go.${var.domain}"
-    ssl_sni_hostname  = "app-go.${var.domain}"
-    override_host     = "app-go.${var.domain}"
+  dynamic "backend" {
+    for_each = local.optional_compute_backends
+    content {
+      name              = backend.value.name
+      address           = backend.value.host
+      port              = 443
+      use_ssl           = true
+      ssl_cert_hostname = backend.value.host
+      ssl_sni_hostname  = backend.value.host
+      override_host     = backend.value.host
 
-    shield                = var.shield_pop
-    connect_timeout       = 1000
-    first_byte_timeout    = 15000
-    between_bytes_timeout = 10000
+      shield                = var.shield_pop
+      connect_timeout       = 1000
+      first_byte_timeout    = 15000
+      between_bytes_timeout = 10000
 
-    request_condition = "snippet-routed"
-  }
-
-  backend {
-    name              = "edge-cms-compute-ts"
-    address           = "app-ts.${var.domain}"
-    port              = 443
-    use_ssl           = true
-    ssl_cert_hostname = "app-ts.${var.domain}"
-    ssl_sni_hostname  = "app-ts.${var.domain}"
-    override_host     = "app-ts.${var.domain}"
-
-    shield                = var.shield_pop
-    connect_timeout       = 1000
-    first_byte_timeout    = 15000
-    between_bytes_timeout = 10000
-
-    request_condition = "snippet-routed"
+      request_condition = "snippet-routed"
+    }
   }
 
   # ---------------------------------------------------------------------------
@@ -289,17 +289,24 @@ resource "fastly_service_vcl" "cdn" {
     type     = "recv"
     priority = 10
     content  = <<-VCL
-      declare local var.active STRING;
-      set var.active = table.lookup(edge_cms_config, "active_backend", "rust");
-
-      if (var.active == "go") {
-        set req.backend = F_edge_cms_compute_go;
-      } else if (var.active == "ts") {
-        set req.backend = F_edge_cms_compute_ts;
-      } else {
-        set req.backend = F_edge_cms_compute;
-      }
+      # Default / fallback: Rust. Optional Go/TS snippets below override it
+      # only when their backend is configured.
+      set req.backend = F_edge_cms_compute;
     VCL
+  }
+
+  dynamic "snippet" {
+    for_each = local.optional_compute_backends
+    content {
+      name     = "backend-select-${snippet.key}"
+      type     = "recv"
+      priority = 11
+      content  = <<-VCL
+        if (table.lookup(edge_cms_config, "active_backend", "rust") == "${snippet.key}") {
+          set req.backend = ${snippet.value.vcl_backend};
+        }
+      VCL
+    }
   }
 
   snippet {

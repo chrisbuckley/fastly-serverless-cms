@@ -90,7 +90,8 @@ resource "fastly_service_compute" "app" {
 # ---------------------------------------------------------------------------
 # Compute service — Go WASM app
 # Same stores and backends as Rust. Different domain for coexistence.
-# Domain: app-go.<domain> — needs a CNAME to Fastly (see outputs).
+# Domain: app-go.<domain>. Set var.go_backend_host to it so the VCL service
+# gets a backend for it and dns_routing_records lists its record.
 # ---------------------------------------------------------------------------
 
 # Commented out until Fastly Package API 500 is resolved.

@@ -1,63 +1,39 @@
 package main
 
 import (
-	"strings"
-
 	"github.com/fastly/compute-sdk-go/fsthttp"
-	"github.com/fastly/compute-sdk-go/kvstore"
 )
 
-func handleStaticFile(w fsthttp.ResponseWriter, path string) {
-	var body, contentType string
-	switch path {
-	case "style.css":
-		body = cssContent
-		contentType = "text/css; charset=utf-8"
-	case "admin.js":
-		body = adminJSContent
-		contentType = "application/javascript; charset=utf-8"
-	default:
-		w.WriteHeader(fsthttp.StatusNotFound)
-		w.Write([]byte("Asset not found\n"))
-		return
-	}
-	w.Header().Set("Content-Type", contentType)
-	applyCacheHeaders(w, ttlFromConfig("asset_ttl"), "assets")
-	w.WriteHeader(fsthttp.StatusOK)
-	w.Write([]byte(body))
+// staticAsset maps a public /assets/ path to its embedded source and type.
+type staticAsset struct {
+	file        string
+	contentType string
 }
 
-func handleImage(w fsthttp.ResponseWriter, path string) {
-	store, err := kvstore.Open("images")
-	if err != nil {
-		handleInternalError(w)
+var staticAssets = map[string]staticAsset{
+	"style.css":                  {"shared/css/style.css", "text/css; charset=utf-8"},
+	"admin.css":                  {"shared/css/admin.css", "text/css; charset=utf-8"},
+	"site.js":                    {"shared/js/site.js", "application/javascript; charset=utf-8"},
+	"admin.js":                   {"shared/js/admin.js", "application/javascript; charset=utf-8"},
+	"fonts/fraunces.woff2":       {"shared/fonts/fraunces.woff2", "font/woff2"},
+	"fonts/dm-sans.woff2":        {"shared/fonts/dm-sans.woff2", "font/woff2"},
+	"fonts/jetbrains-mono.woff2": {"shared/fonts/jetbrains-mono.woff2", "font/woff2"},
+}
+
+func handleStaticFile(w fsthttp.ResponseWriter, r *fsthttp.Request, name string) {
+	asset, ok := staticAssets[name]
+	if !ok {
+		handleNotFound(w, r)
 		return
 	}
-	entry, err := store.Lookup("images/" + path)
+	body, err := assetFS.ReadFile(asset.file)
 	if err != nil {
-		w.WriteHeader(fsthttp.StatusNotFound)
-		w.Write([]byte("Image not found\n"))
+		logErrorf("asset %s: %v", name, err)
+		handleInternalError(w, r)
 		return
 	}
-
-	ct := "application/octet-stream"
-	lp := strings.ToLower(path)
-	switch {
-	case strings.HasSuffix(lp, ".jpg"), strings.HasSuffix(lp, ".jpeg"):
-		ct = "image/jpeg"
-	case strings.HasSuffix(lp, ".png"):
-		ct = "image/png"
-	case strings.HasSuffix(lp, ".webp"):
-		ct = "image/webp"
-	case strings.HasSuffix(lp, ".gif"):
-		ct = "image/gif"
-	case strings.HasSuffix(lp, ".svg"):
-		ct = "image/svg+xml"
-	}
-
-	slug := strings.SplitN(path, "/", 2)[0]
-	w.Header().Set("Content-Type", ct)
-	applyCacheHeaders(w, ttlFromConfig("image_ttl"), "image-"+slug)
+	w.Header().Set("Content-Type", asset.contentType)
+	applyAssetCache(w, loadConfig(r.Host))
 	w.WriteHeader(fsthttp.StatusOK)
-	w.Write([]byte(entry.String()))
+	w.Write(body)
 }

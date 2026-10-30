@@ -1,29 +1,37 @@
+<h1 class="sr-only">Dashboard</h1>
+
+{{#if purge_failed}}
+<div class="alert alert-warning" role="alert">
+  Your change was saved, but the edge cache purge failed. Visitors may see stale content until the cache expires. Try again, or purge the affected surrogate keys manually.
+</div>
+{{/if}}
+
 <!-- Quick stats -->
 <section class="stats-strip">
   <div class="stat-card">
     <div class="stat-card-icon stat-icon-total">
-      <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+      <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
     </div>
     <div class="stat-card-value">{{total_posts}}</div>
     <div class="stat-card-label">Total Posts</div>
   </div>
   <div class="stat-card">
     <div class="stat-card-icon stat-icon-published">
-      <svg viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+      <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
     </div>
     <div class="stat-card-value">{{published_count}}</div>
     <div class="stat-card-label">Published</div>
   </div>
   <div class="stat-card">
     <div class="stat-card-icon stat-icon-drafts">
-      <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
     </div>
     <div class="stat-card-value">{{draft_count}}</div>
     <div class="stat-card-label">Drafts</div>
   </div>
   <div class="stat-card">
     <div class="stat-card-icon stat-icon-images">
-      <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+      <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
     </div>
     <div class="stat-card-value">{{total_images}}</div>
     <div class="stat-card-label">Total Images</div>
@@ -33,15 +41,20 @@
 <!-- Action bar -->
 <div class="action-bar">
   <a href="/admin/posts/new" class="btn-new-post">
-    <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
     New Post
   </a>
+  <label for="search-input" class="sr-only">Search posts</label>
   <input type="text" class="search-input" id="search-input" placeholder="Search posts...">
+  <label for="status-filter" class="sr-only">Filter by status</label>
   <select class="filter-select" id="status-filter">
     <option value="all">All Posts</option>
     <option value="published">Published</option>
     <option value="draft">Draft</option>
   </select>
+  <form method="POST" action="/admin/rebuild-index" class="inline-form">
+    <button type="submit" class="btn btn-secondary">Rebuild index</button>
+  </form>
 </div>
 
 <!-- Posts table -->
@@ -50,11 +63,11 @@
     <table class="posts-table" id="posts-table">
       <thead>
         <tr>
-          <th class="sortable" data-sort="title">Title <span class="sort-icon">&#9650;&#9660;</span></th>
-          <th>Status</th>
-          <th class="sortable sort-active" data-sort="date">Date <span class="sort-icon">&#9660;</span></th>
-          <th>Tags</th>
-          <th>Actions</th>
+          <th scope="col" class="sortable" data-sort="title" aria-sort="none"><button type="button" class="sort-btn">Title <span class="sort-icon" aria-hidden="true">&#9650;&#9660;</span></button></th>
+          <th scope="col">Status</th>
+          <th scope="col" class="sortable sort-active" data-sort="date" aria-sort="descending"><button type="button" class="sort-btn">Date <span class="sort-icon" aria-hidden="true">&#9660;</span></button></th>
+          <th scope="col">Tags</th>
+          <th scope="col">Actions</th>
         </tr>
       </thead>
       <tbody id="posts-tbody">
@@ -80,13 +93,13 @@
           </td>
           <td>
             <div class="action-icons">
-              <a href="/admin/posts/{{slug}}/edit" class="action-btn action-btn-edit" title="Edit post">
-                <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              <a href="/admin/posts/{{slug}}/edit" class="action-btn action-btn-edit" title="Edit post" aria-label="Edit post: {{title}}">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
               </a>
-              <form method="POST" action="/admin/posts/{{slug}}" data-action="delete" style="display:inline;">
+              <form method="POST" action="/admin/posts/{{slug}}" data-action="delete" class="inline-form">
                 <input type="hidden" name="_method" value="DELETE">
-                <button type="button" class="action-btn action-btn-delete" title="Delete post">
-                  <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                <button type="button" class="action-btn action-btn-delete" title="Delete post" aria-label="Delete post: {{title}}">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
                 </button>
               </form>
             </div>
@@ -98,9 +111,9 @@
   </div>
 
   <!-- Empty state: shown by server when no posts exist, or by JS when filters match nothing -->
-  <div class="empty-state" id="empty-state" style="{{#if posts}}display:none;{{else}}display:block;{{/if}}">
+  <div class="empty-state" id="empty-state"{{#if posts}} hidden{{/if}}>
     <div class="empty-state-icon">
-      <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+      <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" aria-hidden="true" focusable="false" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
     </div>
     <div class="empty-state-title">No posts found</div>
     <div class="empty-state-text">{{#unless posts}}Create your first post to get started.{{else}}No posts match your current filter. Try adjusting your search or filter criteria.{{/unless}}</div>
@@ -108,7 +121,7 @@
 
   {{#if posts}}
   <div class="table-footer" id="table-footer">
-    <span id="row-count">Showing {{total_posts}} posts</span>
+    <span id="row-count" role="status" aria-live="polite">Showing {{total_posts}} posts</span>
   </div>
   {{/if}}
 </div>
@@ -121,7 +134,7 @@
     <div class="sidebar-manager-header">
       <h2 class="sidebar-manager-title">Sidebar Structure</h2>
       <a href="/admin/sidebar" class="btn-manage-sidebar">
-        <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
         Manage
       </a>
     </div>
@@ -130,13 +143,13 @@
       <li class="sidebar-preview-item">
         {{#if (eq type "category")}}
         <div class="sidebar-preview-icon sidebar-preview-icon-cat">
-          <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
         </div>
         <span class="sidebar-preview-label">{{label}}</span>
-        <span class="sidebar-preview-detail">{{children.length}} posts</span>
+        <span class="sidebar-preview-detail">category</span>
         {{else}}
         <div class="sidebar-preview-icon sidebar-preview-icon-link">
-          <svg viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+          <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
         </div>
         <span class="sidebar-preview-label">{{label}}</span>
         <span class="sidebar-preview-detail">external link</span>
@@ -150,7 +163,7 @@
   <div class="edge-info-card">
     <div>
       <div class="edge-info-card-title">
-        <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
         Running on Fastly Edge
       </div>
       <p>All admin operations execute at the edge. Post content stored in KV Store, images in Object Store. Cache purge triggers automatically on every write.</p>

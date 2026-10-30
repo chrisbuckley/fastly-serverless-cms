@@ -27,6 +27,7 @@ const (
 	RouteAdminUploadImage
 	RouteAdminSidebar
 	RouteAdminUpdateSidebar
+	RouteAdminRebuildIndex
 	RouteNotFound
 )
 
@@ -41,7 +42,7 @@ type Route struct {
 // Exact matches are checked before prefix matches.
 func MatchRoute(method, path string) Route {
 	switch method {
-	case "GET":
+	case "GET", "HEAD":
 		return matchGet(path)
 	case "POST":
 		return matchPost(path)
@@ -115,6 +116,8 @@ func matchPost(path string) Route {
 		return Route{Kind: RouteAdminCreatePost}
 	case "/admin/images":
 		return Route{Kind: RouteAdminUploadImage}
+	case "/admin/rebuild-index":
+		return Route{Kind: RouteAdminRebuildIndex}
 	}
 
 	// POST /admin/posts/{slug} → update

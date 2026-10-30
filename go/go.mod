@@ -9,4 +9,10 @@ require (
 	golang.org/x/crypto v0.58.0
 )
 
-require gopkg.in/yaml.v2 v2.4.0 // indirect
+require (
+	github.com/aymerick/douceur v0.2.0 // indirect
+	github.com/gorilla/css v1.0.1 // indirect
+	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
+	golang.org/x/net v0.60.0 // indirect
+	gopkg.in/yaml.v2 v2.4.0 // indirect
+)

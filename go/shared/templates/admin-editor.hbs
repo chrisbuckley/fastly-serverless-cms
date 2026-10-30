@@ -1,22 +1,30 @@
-<!-- Metadata Section -->
-<form method="POST" action="{{#if editing}}/admin/posts/{{post.slug}}{{else}}/admin/posts{{/if}}">
-  {{#if editing}}<input type="hidden" name="_method" value="PUT">{{/if}}
+<h1 class="sr-only">{{#if is_new}}New post{{else}}Edit post{{/if}}</h1>
 
-  <section class="metadata">
+{{#if error}}
+<div class="alert alert-error" role="alert">{{error}}</div>
+{{/if}}
+
+<div class="alert alert-error" id="editor-error" role="alert" hidden></div>
+
+<form method="POST" action="{{#if is_new}}/admin/posts{{else}}/admin/posts/{{post.slug}}{{/if}}">
+  {{#unless is_new}}<input type="hidden" name="_method" value="PUT">{{/unless}}
+
+  <!-- Metadata Section -->
+  <section class="metadata" aria-label="Post details">
     <div class="metadata-grid">
 
       <!-- Title -->
       <div class="field field-full field-title">
         <label for="post-title">Title</label>
-        <input type="text" id="post-title" name="title" placeholder="Post title..." value="{{#if editing}}{{post.title}}{{/if}}">
+        <input type="text" id="post-title" name="title" placeholder="Post title..." value="{{post.title}}" maxlength="200" required>
       </div>
 
       <!-- Slug -->
       <div class="field field-slug">
         <label for="post-slug">Slug</label>
         <div class="slug-input-group">
-          <span class="slug-prefix">/post/</span>
-          <input type="text" id="post-slug" name="slug" value="{{#if editing}}{{post.slug}}{{/if}}" placeholder="auto-generated-from-title">
+          <span class="slug-prefix" aria-hidden="true">/post/</span>
+          <input type="text" id="post-slug" name="slug" value="{{post.slug}}" placeholder="auto-generated-from-title" maxlength="100" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" required>
         </div>
       </div>
 
@@ -24,67 +32,64 @@
       <div class="field">
         <label for="post-status">Status</label>
         <select id="post-status" name="status">
-          <option value="draft" {{#if editing}}{{#if (eq post.status "draft")}}selected{{/if}}{{else}}selected{{/if}}>Draft</option>
-          <option value="published" {{#if editing}}{{#if (eq post.status "published")}}selected{{/if}}{{/if}}>Published</option>
+          {{#if post.status}}
+          <option value="draft"{{#if (eq post.status "draft")}} selected{{/if}}>Draft</option>
+          <option value="published"{{#if (eq post.status "published")}} selected{{/if}}>Published</option>
+          {{else}}
+          <option value="draft" selected>Draft</option>
+          <option value="published">Published</option>
+          {{/if}}
         </select>
       </div>
 
       <!-- Tags -->
       <div class="field field-full">
-        <label>Tags</label>
+        <label for="tags-input">Tags</label>
         <div class="tags-input-wrapper" id="tags-wrapper">
-          {{#if editing}}
-          {{#each post.tags}}
-          <span class="tag-pill">{{this}} <span class="tag-pill-remove" data-tag="{{this}}">&times;</span></span>
-          {{/each}}
-          {{/if}}
           <input type="text" class="tags-input" id="tags-input" placeholder="Add a tag and press Enter...">
         </div>
-        <input type="hidden" id="tags-hidden" name="tags" value="{{#if editing}}{{post.tags_str}}{{/if}}">
+        <input type="hidden" id="tags-hidden" name="tags" value="{{post.tags_str}}">
       </div>
 
       <!-- Excerpt -->
       <div class="field field-full">
         <label for="post-excerpt">Excerpt</label>
-        <textarea id="post-excerpt" name="excerpt" rows="2" placeholder="A short summary for listing pages...">{{#if editing}}{{post.excerpt}}{{/if}}</textarea>
+        <textarea id="post-excerpt" name="excerpt" rows="2" maxlength="500" placeholder="A short summary for listing pages...">{{post.excerpt}}</textarea>
       </div>
 
       <!-- Featured Image -->
       <div class="field field-full">
-        <label>Featured Image</label>
-        <div class="image-upload-zone" id="image-upload">
-          <svg class="image-upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <label for="featured-image">Featured Image</label>
+        <div class="image-upload-zone" id="image-upload" role="button" tabindex="0" aria-describedby="image-upload-hint">
+          <svg class="image-upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
             <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
             <circle cx="8.5" cy="8.5" r="1.5"/>
             <polyline points="21 15 16 10 5 21"/>
           </svg>
           <div class="image-upload-text">
-            <strong>Click to upload</strong> or drag and drop
+            <strong id="image-upload-title">Click to upload</strong> <span id="image-upload-sub">or drag and drop</span>
           </div>
-          <div class="image-upload-hint">PNG, JPG, or WebP up to 5MB. Images are optimized on the fly via Fastly Image Optimizer.</div>
+          <div class="image-upload-hint" id="image-upload-hint">JPG, PNG, GIF or WebP up to 10 MB. Images are optimized on the fly via Fastly Image Optimizer.</div>
         </div>
-        <input type="hidden" id="featured-image-hidden" name="featured_image" value="{{#if editing}}{{post.featured_image}}{{/if}}">
+        <p class="field-status" id="image-upload-status" role="status" aria-live="polite"></p>
+        <input type="text" id="featured-image" name="featured_image" value="{{post.featured_image}}" placeholder="/images/my-post/hero.jpg">
       </div>
 
     </div>
   </section>
 
   <!-- Editor Section (Split Pane) -->
-  <section class="editor-section">
+  <section class="editor-section" aria-label="Post content">
 
-    <div class="editor-tabs">
-      <div class="editor-tab active">
-        <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+    <div class="editor-tabs" role="tablist" aria-label="Editor view">
+      <button type="button" role="tab" id="tab-editor" class="editor-tab active" aria-selected="true" aria-controls="editor-panes">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
         Editor
-      </div>
+      </button>
       <div class="editor-tab-spacer"></div>
-      <div class="editor-tab-info">
-        <span class="dot"></span>
-        Auto-saved
-      </div>
     </div>
 
-    <div class="editor-panes">
+    <div class="editor-panes" id="editor-panes" role="tabpanel" aria-labelledby="tab-editor">
 
       <!-- Markdown Editor -->
       <div class="editor-pane">
@@ -94,12 +99,13 @@
         </div>
         <div class="editor-textarea-wrapper">
           <div class="editor-line-numbers" id="line-numbers" aria-hidden="true"></div>
-          <textarea class="editor-textarea" id="markdown-editor" name="content" spellcheck="false" placeholder="Start writing in Markdown...">{{#if editing}}{{post.content}}{{/if}}</textarea>
+          <label for="markdown-editor" class="sr-only">Post content (Markdown)</label>
+          <textarea class="editor-textarea" id="markdown-editor" name="content" spellcheck="false" placeholder="Start writing in Markdown...">{{post.content}}</textarea>
         </div>
       </div>
 
       <!-- Divider -->
-      <div class="pane-divider" id="pane-divider"></div>
+      <div class="pane-divider" id="pane-divider" role="separator" aria-orientation="vertical" aria-label="Resize editor and preview panes" aria-valuemin="20" aria-valuemax="80" aria-valuenow="50" tabindex="0"></div>
 
       <!-- Preview Pane -->
       <div class="preview-pane">
@@ -107,7 +113,7 @@
           <span class="preview-pane-title">Preview</span>
           <span class="preview-pane-badge">Reader View</span>
         </div>
-        <div class="preview-content" id="preview-content">
+        <div class="preview-content" id="preview-content" role="region" aria-label="Post preview">
         </div>
       </div>
 
@@ -115,21 +121,21 @@
   </section>
 
   <!-- Action Bar -->
-  <div class="action-bar" style="padding:1rem 0 1.5rem; max-width:none;">
+  <div class="action-bar action-bar-editor">
     <div class="action-bar-left">
       <button type="submit" class="btn btn-primary">
-        <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-        {{#if editing}}Update Post{{else}}Save Draft{{/if}}
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+        {{#if is_new}}Save Draft{{else}}Update Post{{/if}}
       </button>
     </div>
-    {{#if editing}}
+    {{#unless is_new}}
     <div class="action-bar-right">
-      <button type="button" class="btn btn-danger" onclick="if(confirm('Delete this post? This cannot be undone.')){fetch('/admin/posts/{{post.slug}}',{method:'DELETE'}).then(function(){window.location='/admin';});}">
-        <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+      <button type="button" class="btn btn-danger" id="delete-post-btn" data-slug="{{post.slug}}">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
         Delete
       </button>
     </div>
-    {{/if}}
+    {{/unless}}
   </div>
 
 </form>

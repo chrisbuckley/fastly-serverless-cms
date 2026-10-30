@@ -23,7 +23,10 @@ pub enum Route {
     NotFound,
 }
 
+/// HEAD is routed exactly like GET (as the TypeScript and Go backends do);
+/// the platform strips the body from HEAD responses.
 pub fn match_route(method: &str, path: &str) -> Route {
+    let method = if method == "HEAD" { "GET" } else { method };
     match (method, path) {
         ("GET", "/api/edge-info") => Route::EdgeInfo,
         ("GET", "/") => Route::Home,
@@ -238,6 +241,36 @@ mod tests {
         assert!(matches!(
             match_route("POST", "/admin/logout"),
             Route::AdminLogout
+        ));
+    }
+
+    #[test]
+    fn route_head_matches_get() {
+        assert!(matches!(match_route("HEAD", "/"), Route::Home));
+        assert!(matches!(match_route("HEAD", "/feed.xml"), Route::Feed));
+        assert!(matches!(
+            match_route("HEAD", "/api/edge-info"),
+            Route::EdgeInfo
+        ));
+        match match_route("HEAD", "/post/hello-world") {
+            Route::Post { slug } => assert_eq!(slug, "hello-world"),
+            other => panic!("expected Post, got {:?}", route_name(&other)),
+        }
+        match match_route("HEAD", "/assets/style.css") {
+            Route::Asset { path } => assert_eq!(path, "style.css"),
+            other => panic!("expected Asset, got {:?}", route_name(&other)),
+        }
+        assert!(matches!(
+            match_route("HEAD", "/admin/login"),
+            Route::AdminLogin
+        ));
+        assert!(matches!(
+            match_route("HEAD", "/nonexistent"),
+            Route::NotFound
+        ));
+        assert!(matches!(
+            match_route("HEAD", "/admin/posts/foo"),
+            Route::NotFound
         ));
     }
 

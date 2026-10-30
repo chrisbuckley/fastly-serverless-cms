@@ -797,6 +797,7 @@ Pull requests targeting `main` that touch `edge-cms/**` trigger the `edge-cms CI
 | **Integration** | Builds Compute package, starts [Viceroy](https://github.com/fastly/Viceroy) via [`fastly/compute-actions/setup`](https://github.com/fastly/compute-actions), runs HTTP integration tests (15 assertions covering reader routes, cache headers, admin auth) |
 | **VCL** | `falco fmt --check`, `falco lint` on any `.vcl` files (skips gracefully when VCL is inline in Terraform) |
 | **Secrets** | `detect-secrets scan` against baseline to prevent accidental credential commits |
+| **Dependency audit** | `npm audit --omit=dev`, `govulncheck`, `cargo audit` — fails the PR on known-vulnerable dependencies. Node jobs use `check-latest` so the newest patched Node 22.x is always used |
 
 The integration test job uses [Fastly's official Compute GitHub Actions](https://github.com/fastly/compute-actions) (`fastly/compute-actions/setup@v6`) to install the Fastly CLI and Viceroy runtime. This builds the Rust Compute package, starts a local Viceroy instance, and runs `tests/integration.sh` — the same test suite used in local development.
 

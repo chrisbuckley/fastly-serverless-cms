@@ -84,7 +84,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
 
       - run: cp -r ../shared ./shared
@@ -122,6 +122,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          # Always resolve newest 22.x so runner toolcache can't pin a Node
+          # build vulnerable to CVE-2026-111497 (Node2Shell, Brotli).
+          check-latest: true
           cache: npm
           cache-dependency-path: typescript/package-lock.json
 
@@ -171,7 +174,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
 
       - name: Build Compute package
@@ -202,6 +205,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          # Always resolve newest 22.x so runner toolcache can't pin a Node
+          # build vulnerable to CVE-2026-111497 (Node2Shell, Brotli).
+          check-latest: true
           cache: npm
           cache-dependency-path: typescript/package-lock.json
 
@@ -236,6 +242,40 @@ jobs:
 
       - name: falco lint
         run: find edge-cms -name '*.vcl' -exec falco lint {} +
+
+  dependency-audit:
+    name: Dependency vulnerability audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          check-latest: true
+
+      - name: npm audit (production deps)
+        working-directory: typescript
+        run: npm audit --omit=dev --audit-level=moderate
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: govulncheck
+        working-directory: go
+        run: |
+          cp -r ../shared ./shared
+          go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo audit
+        working-directory: rust
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
 
   detect-secrets:
     name: Detect secrets

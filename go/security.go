@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/subtle"
 	"net"
+	"net/netip"
 	"net/url"
 	"strings"
 
@@ -97,4 +98,26 @@ func clientIP(r *fsthttp.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// rateLimitKey maps a client address to its rate-limit bucket. IPv4 (and
+// IPv4-mapped IPv6) is keyed on the full address; native IPv6 is keyed on its
+// /64 so an attacker cannot bypass the limit by rotating addresses within one
+// allocation. Unparseable input is returned unchanged.
+func rateLimitKey(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	if addr.Is4In6() {
+		return addr.Unmap().String()
+	}
+	if addr.Is4() {
+		return addr.String()
+	}
+	prefix, err := addr.WithZone("").Prefix(64)
+	if err != nil {
+		return ip
+	}
+	return prefix.String()
 }

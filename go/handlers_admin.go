@@ -264,7 +264,7 @@ func writeTooManyAttempts(w fsthttp.ResponseWriter) {
 
 // handleLoginSubmit processes login form submission.
 func handleLoginSubmit(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
-	if loginRateLimited(clientIP(r)) {
+	if loginRateLimited(rateLimitKey(clientIP(r))) {
 		writeTooManyAttempts(w)
 		return
 	}

@@ -197,8 +197,10 @@ resource "fastly_service_vcl" "cdn" {
   # login_penalty (contract section 4).
   #
   # Counted only on the first Fastly hop so shielded requests aren't counted
-  # twice. Keyed on Fastly-Client-IP, which edge-request has already reset to
-  # client.ip. Requires Edge Rate Limiting to be enabled on the service.
+  # twice. Keyed on client.ip: IPv4 uses the full address, IPv6 its /64
+  # (h1:h2:h3:h4::/64) so rotating addresses within one allocation cannot
+  # bypass the limit. addr.extract_bits numbers bits from the
+  # least-significant end. Requires Edge Rate Limiting to be enabled.
   # Ref: https://www.fastly.com/documentation/reference/vcl/functions/rate-limiting/ratelimit-check-rate/
   # ---------------------------------------------------------------------------
   snippet {
@@ -217,7 +219,17 @@ resource "fastly_service_vcl" "cdn" {
     priority = 3
     content  = <<-VCL
       if (fastly.ff.visits_this_service == 0 && req.method == "POST" && req.url.path == "/admin/login") {
-        if (ratelimit.check_rate(req.http.Fastly-Client-IP, rc_admin_login, 1, 60, 10, pb_admin_login, 15m)) {
+        declare local var.rl_key STRING;
+        if (addr.is_ipv6(client.ip)) {
+          set var.rl_key =
+            std.itoa_charset(addr.extract_bits(client.ip, 112, 16), "0123456789abcdef") + ":" +
+            std.itoa_charset(addr.extract_bits(client.ip, 96, 16), "0123456789abcdef") + ":" +
+            std.itoa_charset(addr.extract_bits(client.ip, 80, 16), "0123456789abcdef") + ":" +
+            std.itoa_charset(addr.extract_bits(client.ip, 64, 16), "0123456789abcdef") + "::/64";
+        } else {
+          set var.rl_key = client.ip;
+        }
+        if (ratelimit.check_rate(var.rl_key, rc_admin_login, 1, 60, 10, pb_admin_login, 15m)) {
           error 629 "Too Many Requests";
         }
       }

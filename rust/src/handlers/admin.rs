@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::Read;
+use std::net::IpAddr;
 use std::time::Duration;
 
 use fastly::erl::{CounterDuration, Penaltybox, RateCounter};
@@ -81,6 +82,23 @@ macro_rules! authed {
 /// Pure login-limit decision: more than 5 attempts in the 60 s window.
 pub fn over_login_limit(count_last_minute: u32) -> bool {
     count_last_minute > LOGIN_LIMIT_PER_MINUTE
+}
+
+/// Rate-limit bucket for a client address. IPv4 (and IPv4-mapped IPv6) is
+/// keyed on the full address; native IPv6 is keyed on its /64 so an attacker
+/// cannot bypass the limit by rotating addresses within one allocation.
+fn rate_limit_key(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let s = v6.segments();
+                let prefix = std::net::Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0);
+                format!("{prefix}/64")
+            }
+        },
+    }
 }
 
 /// ERL check for `POST /admin/login`. ERL hostcall failures fail open (and
@@ -497,7 +515,7 @@ pub fn login_page(req: &Request, ctx: &Ctx) -> Result<Response, Error> {
 pub fn login_submit(mut req: Request, ctx: &Ctx) -> Result<Response, Error> {
     let client = ctx
         .client_ip
-        .map(|ip| ip.to_string())
+        .map(rate_limit_key)
         .unwrap_or_else(|| "unknown".to_string());
     if login_rate_limited(&client) {
         return Ok(security::too_many_login_attempts());
@@ -1153,6 +1171,30 @@ mod tests {
             validate_upload("../x", "a.png", png).unwrap_err().status,
             StatusCode::BAD_REQUEST
         );
+    }
+
+    #[test]
+    fn rate_limit_key_ipv4_unchanged() {
+        let ip: IpAddr = "203.0.113.7".parse().unwrap();
+        assert_eq!(rate_limit_key(ip), "203.0.113.7");
+    }
+
+    #[test]
+    fn rate_limit_key_ipv6_masked_to_64() {
+        let ip: IpAddr = "2001:db8:1:2:aaaa:bbbb:cccc:dddd".parse().unwrap();
+        assert_eq!(rate_limit_key(ip), "2001:db8:1:2::/64");
+        let other: IpAddr = "2001:db8:1:2::1".parse().unwrap();
+        assert_eq!(rate_limit_key(other), "2001:db8:1:2::/64");
+        let short: IpAddr = "2001:db8::1".parse().unwrap();
+        assert_eq!(rate_limit_key(short), "2001:db8::/64");
+        let next: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+        assert_ne!(rate_limit_key(next), rate_limit_key(ip));
+    }
+
+    #[test]
+    fn rate_limit_key_ipv4_mapped_ipv6_is_ipv4() {
+        let ip: IpAddr = "::ffff:198.51.100.9".parse().unwrap();
+        assert_eq!(rate_limit_key(ip), "198.51.100.9");
     }
 
     #[test]

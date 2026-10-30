@@ -9,9 +9,9 @@
     "test": "node --experimental-vm-modules node_modules/.bin/jest"
   },
   "dependencies": {
-    "@fastly/js-compute": "^3.42.1",
+    "@fastly/js-compute": "^4.0.1",
     "bcryptjs": "^2.4.3",
-    "handlebars": "^4.7.8",
+    "handlebars": "^4.7.10",
     "marked": "^15.0.0"
   },
   "devDependencies": {

@@ -101,7 +101,7 @@ async function handleRequest(req: Request): Promise<Response> {
   }
 
   applySecurityHeaders(resp, path);
-  resp.headers.set("X-Edge-CMS-Compute-Version", env("FASTLY_SERVICE_VERSION") || "local");
+  resp.headers.set("X-Edge-CMS-Compute-Version", env("FASTLY_SERVICE_VERSION") || "dev");
   logLine("info", "request", { status: resp.status, duration_ms: Date.now() - started });
   return resp;
 }

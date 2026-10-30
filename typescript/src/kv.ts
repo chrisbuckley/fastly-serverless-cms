@@ -76,7 +76,7 @@ export async function isSessionRevoked(nonce: string): Promise<boolean> {
 }
 
 export async function revokeSession(nonce: string, expires: number, now: number): Promise<void> {
-  const ttl = Math.max(expires - now, 1);
+  const ttl = Math.max(expires - now, 60);
   await content().put(`session-revoked:${nonce}`, String(expires), { ttl });
 }
 

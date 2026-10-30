@@ -6,6 +6,10 @@ terraform {
       source  = "fastly/fastly"
       version = "~> 9.2"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
   }
 }
 

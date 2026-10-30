@@ -12,11 +12,14 @@
 #   EDGE_CMS_BASE_URL        default http://127.0.0.1:7676
 #   EDGE_CMS_SITE_URL        expected site_url, default http://127.0.0.1:7676
 #   EDGE_CMS_ORIGIN_AUTH     default local-dev-origin-auth
-#   EDGE_CMS_ADMIN_PASSWORD  default testpassword
+#   EDGE_CMS_ADMIN_PASSWORD  default admin
 #
 # Requires: bash, curl, grep, sed, tr, head, cmp
 #
 # Notes:
+#   * Mutating admin requests send `Origin: $BASE`. CSRF compares Origin to the
+#     backend's site_url, so EDGE_CMS_BASE_URL must equal site_url
+#     (http://127.0.0.1:7676 locally); a foreign Origin is tested separately.
 #   * The session cookie is carried in $SESSION (the cookie is `Secure`,
 #     `Path=/admin`, so a stock curl jar is unreliable over http://127.0.0.1).
 #   * At most 5 POST /admin/login requests are made per run so the in-Compute
@@ -27,7 +30,7 @@ set -euo pipefail
 BASE="${EDGE_CMS_BASE_URL:-http://127.0.0.1:7676}"
 SITE_URL="${EDGE_CMS_SITE_URL:-http://127.0.0.1:7676}"
 ORIGIN_AUTH="${EDGE_CMS_ORIGIN_AUTH:-local-dev-origin-auth}"
-ADMIN_PASSWORD="${EDGE_CMS_ADMIN_PASSWORD:-testpassword}"
+ADMIN_PASSWORD="${EDGE_CMS_ADMIN_PASSWORD:-admin}"
 
 PASS=0
 FAIL=0
@@ -586,6 +589,11 @@ form_post /admin/posts \
 expect_status "invalid slug 'Bad Slug' -> 400" 400
 
 form_post /admin/posts \
+    --data-urlencode "title=No slug" --data-urlencode "slug=" \
+    --data-urlencode "content=x" --data-urlencode "status=published"
+expect_status "empty slug on create -> 400" 400
+
+form_post /admin/posts \
     --data-urlencode "title=" --data-urlencode "slug=$INVALID_SLUG_POST" \
     --data-urlencode "content=x" --data-urlencode "status=published"
 expect_status "empty title -> 400" 400
@@ -750,6 +758,15 @@ expect_status "/tag/fastly?page=999 -> 404" 404
 req GET "/tag/fastly?page=1"
 expect_status "/tag/fastly?page=1 -> 200" 200
 
+req GET "/?page=abc"
+expect_status "non-numeric page -> 404" 404
+
+req GET "/tag/fastly?page=abc"
+expect_status "non-numeric tag page -> 404" 404
+
+req GET "/tag/no-such-tag-qa"
+expect_status "unknown tag with no posts -> 200 (empty list)" 200
+
 # ---------------------------------------------------------------------------
 section "16. Delete (contract §3, §8)"
 # ---------------------------------------------------------------------------
@@ -767,11 +784,14 @@ req GET "/post/$SLUG"
 expect_status "post survives rejected deletes" 200
 
 req DELETE "/admin/posts/$SLUG"
-expect_status "delete post succeeds" 200 204 302 303
+expect_status "delete post succeeds (redirect)" 302 303
 
 req GET "/post/$SLUG"
 expect_status "deleted post -> 404" 404
 expect_header "deleted post 404 is no-store" Cache-Control 'private, no-store'
+
+req DELETE "/admin/posts/$SLUG"
+expect_status "delete of a missing post still redirects" 302 303
 
 req GET /
 expect_no_body "home no longer lists the deleted post" "QA Post Updated"

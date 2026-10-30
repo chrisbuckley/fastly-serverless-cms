@@ -1,88 +1,142 @@
-use fastly::config_store::ConfigStore;
+//! Cache headers and surrogate-key purging (contract §7).
+
 use fastly::secret_store::SecretStore;
 use fastly::{Request, Response};
 
-fn ttl_from_config(key: &str) -> u32 {
-    ConfigStore::open("cache_config")
-        .get(key)
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(3600)
+use crate::config;
+use crate::logging;
+use crate::security::NO_STORE;
+
+const FEED_BROWSER_TTL: u32 = 300;
+const ASSET_BROWSER_CACHE: &str = "public, max-age=31536000, immutable";
+
+fn page_surrogate_control(ttl: u32) -> String {
+    format!("max-age={ttl}, stale-while-revalidate=60, stale-if-error=86400")
 }
 
-pub struct CacheHeaders {
-    pub surrogate_keys: Vec<String>,
-    pub ttl: u32,
-}
-
-impl CacheHeaders {
-    pub fn page(keys: Vec<&str>) -> Self {
-        Self {
-            surrogate_keys: keys.into_iter().map(String::from).collect(),
-            ttl: ttl_from_config("page_ttl"),
-        }
+fn with_keys(mut resp: Response, keys: &[&str]) -> Response {
+    if !keys.is_empty() {
+        resp.set_header("Surrogate-Key", keys.join(" "));
     }
-
-    pub fn asset(keys: Vec<&str>) -> Self {
-        Self {
-            surrogate_keys: keys.into_iter().map(String::from).collect(),
-            ttl: ttl_from_config("asset_ttl"),
-        }
-    }
-
-    pub fn image(keys: Vec<&str>) -> Self {
-        Self {
-            surrogate_keys: keys.into_iter().map(String::from).collect(),
-            ttl: ttl_from_config("image_ttl"),
-        }
-    }
-
-    pub fn apply(self, mut resp: Response) -> Response {
-        resp.set_header("Surrogate-Control", format!("max-age={}", self.ttl));
-        resp.set_header("Cache-Control", format!("max-age={}, public", self.ttl));
-        if !self.surrogate_keys.is_empty() {
-            resp.set_header("Surrogate-Key", self.surrogate_keys.join(" "));
-        }
-        resp
-    }
-}
-
-pub fn no_cache(mut resp: Response) -> Response {
-    resp.set_header("Cache-Control", "private, no-store");
     resp
 }
 
-/// Purge surrogate keys from the VCL CDN service via the Fastly Purge API.
+/// HTML pages (home, post, tag). VCL rewrites the browser TTL for HTML.
+pub fn page(resp: Response, keys: &[&str]) -> Response {
+    let ttl = config::page_ttl();
+    with_keys(
+        resp.with_header("Surrogate-Control", page_surrogate_control(ttl))
+            .with_header("Cache-Control", format!("max-age={ttl}, public")),
+        keys,
+    )
+}
+
+/// feed.xml, sitemap.xml, robots.txt: edge TTL as pages, short browser TTL.
+pub fn feed(resp: Response) -> Response {
+    with_keys(
+        resp.with_header(
+            "Surrogate-Control",
+            page_surrogate_control(config::page_ttl()),
+        )
+        .with_header(
+            "Cache-Control",
+            format!("public, max-age={FEED_BROWSER_TTL}"),
+        ),
+        &["post-index"],
+    )
+}
+
+/// Versioned static assets.
+pub fn asset(resp: Response) -> Response {
+    with_keys(
+        resp.with_header(
+            "Surrogate-Control",
+            format!("max-age={}", config::asset_ttl()),
+        )
+        .with_header("Cache-Control", ASSET_BROWSER_CACHE),
+        &["assets"],
+    )
+}
+
+pub fn no_cache(resp: Response) -> Response {
+    resp.with_header("Cache-Control", NO_STORE)
+}
+
+/// Soft-purge surrogate keys on the VCL CDN service via the Fastly API.
 ///
-/// Reads `fastly_api_token` and `purge_service_id` from the Secret Store.
-/// `purge_service_id` must be the ID of the *VCL* CDN service — that's where
-/// the cache lives. The Compute service itself is not the caching layer.
-/// Fire-and-forget: logs on error but does not propagate to the caller.
-pub fn purge_keys(keys: &[&str]) {
-    if let Err(e) = purge_keys_inner(keys) {
-        eprintln!("purge error: {e}");
+/// Reads `fastly_api_token` and `purge_service_id` (the *VCL* service, where
+/// the cache lives) from the Secret Store. Returns `false` on any failure,
+/// including a non-2xx API status, so admin handlers can surface it.
+pub fn purge_keys(keys: &[String]) -> bool {
+    match purge_keys_inner(keys) {
+        Ok(()) => true,
+        Err(e) => {
+            logging::event("error", &format!("purge failed: {e}"));
+            false
+        }
     }
 }
 
-fn purge_keys_inner(keys: &[&str]) -> Result<(), fastly::Error> {
+fn read_secret(secrets: &SecretStore, name: &str) -> Result<String, fastly::Error> {
+    let secret = secrets
+        .try_get(name)?
+        .ok_or_else(|| fastly::Error::msg(format!("missing secret: {name}")))?;
+    Ok(String::from_utf8_lossy(&secret.plaintext()).into_owned())
+}
+
+fn purge_keys_inner(keys: &[String]) -> Result<(), fastly::Error> {
     let secrets = SecretStore::open("secrets")?;
+    let api_token = read_secret(&secrets, "fastly_api_token")?;
+    let service_id = read_secret(&secrets, "purge_service_id")?;
 
-    let api_token = secrets
-        .try_get("fastly_api_token")?
-        .ok_or_else(|| fastly::Error::msg("missing secret: fastly_api_token"))?;
-    let api_token = String::from_utf8_lossy(&api_token.plaintext()).into_owned();
-
-    let service_id = secrets
-        .try_get("purge_service_id")?
-        .ok_or_else(|| fastly::Error::msg("missing secret: purge_service_id"))?;
-    let service_id = String::from_utf8_lossy(&service_id.plaintext()).into_owned();
-
-    let url = format!("https://api.fastly.com/service/{service_id}/purge");
-
-    Request::post(url)
+    let mut resp = Request::post(format!("https://api.fastly.com/service/{service_id}/purge"))
         .with_header("Fastly-Key", api_token)
         .with_header("Surrogate-Key", keys.join(" "))
         .with_header("Fastly-Soft-Purge", "1")
         .send("fastly-api")?;
 
-    Ok(())
+    let status = resp.get_status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let body = resp.take_body_str();
+    Err(fastly::Error::msg(format!(
+        "status {} body {}",
+        status.as_u16(),
+        logging::truncate_bytes(&body, 200)
+    )))
+}
+
+/// Append `?purge=failed` to an admin redirect target when a purge failed.
+pub fn redirect_target(base: &str, purged: bool) -> String {
+    if purged {
+        base.to_string()
+    } else if base.contains('?') {
+        format!("{base}&purge=failed")
+    } else {
+        format!("{base}?purge=failed")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redirect_target_appends_flag_on_failure() {
+        assert_eq!(redirect_target("/admin", true), "/admin");
+        assert_eq!(redirect_target("/admin", false), "/admin?purge=failed");
+        assert_eq!(
+            redirect_target("/admin?x=1", false),
+            "/admin?x=1&purge=failed"
+        );
+    }
+
+    #[test]
+    fn page_surrogate_control_format() {
+        assert_eq!(
+            page_surrogate_control(86400),
+            "max-age=86400, stale-while-revalidate=60, stale-if-error=86400"
+        );
+    }
 }

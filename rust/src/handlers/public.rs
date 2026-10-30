@@ -1,41 +1,25 @@
 use fastly::http::StatusCode;
-use fastly::kv_store::KVStoreError;
-use fastly::{Error, KVStore, Request, Response};
-use serde_json::json;
+use fastly::{Error, Request, Response};
+use serde_json::{json, Value};
 
-use crate::cache::CacheHeaders;
+use crate::cache;
+use crate::config::{self, Ctx};
+use crate::dates;
+use crate::error;
+use crate::kv;
 use crate::markdown;
-use crate::models::{Post, PostIndex, PostStatus, SidebarConfig};
-use crate::templates;
+use crate::models::{Post, PostMeta, PostStatus};
+use crate::pagination;
+use crate::templates::{self, PageMeta, DEFAULT_DESCRIPTION};
+use crate::validation::{is_valid_slug, is_valid_tag};
 
-pub(crate) fn read_index() -> Result<PostIndex, Error> {
-    let store = KVStore::open("content")?.ok_or_else(|| Error::msg("content store not found"))?;
-    match store.lookup("_index") {
-        Ok(mut resp) => {
-            let json = resp.take_body().into_string();
-            Ok(serde_json::from_str(&json)?)
-        }
-        Err(KVStoreError::ItemNotFound) => Ok(PostIndex { posts: vec![] }),
-        Err(e) => Err(e.into()),
-    }
-}
-
-pub(crate) fn read_sidebar() -> Result<SidebarConfig, Error> {
-    let store = KVStore::open("content")?.ok_or_else(|| Error::msg("content store not found"))?;
-    match store.lookup("_sidebar") {
-        Ok(mut resp) => {
-            let json = resp.take_body().into_string();
-            Ok(serde_json::from_str(&json)?)
-        }
-        Err(KVStoreError::ItemNotFound) => Ok(SidebarConfig { items: vec![] }),
-        Err(e) => Err(e.into()),
-    }
-}
+const SITE_NAME: &str = "edge/cms";
+const FEED_ITEMS: usize = 20;
 
 /// Real-time edge info — returns the Compute POP and nothing else.
 /// Responds with Cache-Control: no-store so the VCL CDN never caches it.
 /// Client JS reads the VCL edge POP from the X-Served-By response header.
-pub fn edge_info(_req: &Request) -> Result<Response, Error> {
+pub fn edge_info() -> Result<Response, Error> {
     let pop = std::env::var("FASTLY_POP").unwrap_or_else(|_| "local".to_string());
     Ok(Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "application/json")
@@ -44,33 +28,10 @@ pub fn edge_info(_req: &Request) -> Result<Response, Error> {
         .with_body(json!({ "pop": pop }).to_string()))
 }
 
-/// POP code for the footer: FASTLY_POP, falling back to "CDN" (matches TS).
-fn pop_code() -> String {
-    std::env::var("FASTLY_POP")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "CDN".to_string())
-}
-
-/// First 10 chars (YYYY-MM-DD) of an ISO timestamp; never panics on short input.
-fn lastmod(created_at: &str) -> String {
-    created_at.chars().take(10).collect()
-}
-
-/// Extract city and POP code from the client's IP via Fastly geo lookup.
-fn geo_context(req: &Request) -> (String, String) {
-    req.get_client_ip_addr()
-        .and_then(fastly::geo::geo_lookup)
-        .map(|geo| {
-            let city = geo.city().to_string();
-            let city = if city.is_empty() || city == "?" {
-                "Edge".to_string()
-            } else {
-                city
-            };
-            (city, pop_code())
-        })
-        .unwrap_or_else(|| ("Edge".into(), pop_code()))
+fn html(body: String) -> Response {
+    Response::from_status(StatusCode::OK)
+        .with_header("Content-Type", "text/html; charset=utf-8")
+        .with_body(body)
 }
 
 /// XML-escape a string for safe inclusion in RSS/XML output.
@@ -82,61 +43,128 @@ fn xml_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-// ---------------------------------------------------------------------------
-// Reader-facing route handlers
-// ---------------------------------------------------------------------------
-
-pub fn home(req: &Request) -> Result<Response, Error> {
-    let index = read_index()?;
-    let sidebar = read_sidebar()?;
-    let (pop_city, pop_code) = geo_context(req);
-
-    let published: Vec<_> = index.published().into_iter().cloned().collect();
-
-    let all_tags = index.all_tags();
-
-    let data = json!({
-        "posts": published,
-        "sidebar": sidebar,
-        "all_tags": all_tags,
-        "pop_city": pop_city,
-        "pop_code": pop_code,
-    });
-
-    let html = templates::render_page("home", &data)?;
-    let resp = Response::from_status(StatusCode::OK)
-        .with_header("Content-Type", "text/html; charset=utf-8")
-        .with_body(html);
-
-    Ok(CacheHeaders::page(vec!["post-index", "sidebar"]).apply(resp))
+/// Shared listing render for home and tag pages.
+struct Listing<'a> {
+    template: &'a str,
+    base: &'a str,
+    title: &'a str,
+    description: &'a str,
+    posts: Vec<&'a PostMeta>,
+    all_tags: Vec<String>,
+    extra: Value,
+    keys: Vec<String>,
 }
 
-pub fn post(req: &Request, slug: &str) -> Result<Response, Error> {
-    let store = KVStore::open("content")?.ok_or_else(|| Error::msg("content store not found"))?;
-    let key = format!("post:{}", slug);
+fn render_listing(req: &Request, ctx: &Ctx, listing: Listing) -> Result<Response, Error> {
+    let sidebar = kv::read_sidebar(&kv::content()?)?;
+    let Some(page) = pagination::paginate(
+        listing.posts.len(),
+        config::page_size(),
+        req.get_query_parameter("page"),
+    ) else {
+        return Ok(error::not_found(ctx, listing.base));
+    };
+    let canonical = pagination::canonical_path(listing.base, page.page);
 
-    let post: Post = match store.lookup(&key) {
-        Ok(mut resp) => {
-            let json = resp.take_body().into_string();
-            serde_json::from_str(&json)?
-        }
-        Err(KVStoreError::ItemNotFound) => {
-            return crate::error::not_found();
-        }
-        Err(e) => return Err(e.into()),
+    let mut data = json!({
+        "posts": &listing.posts[page.start..page.end],
+        "sidebar": templates::sidebar_view(&sidebar),
+        "all_tags": listing.all_tags,
+        "pagination": pagination::to_json(listing.base, &page),
+    });
+    if let (Some(obj), Value::Object(extra)) = (data.as_object_mut(), listing.extra) {
+        obj.extend(extra);
+    }
+    let meta = PageMeta::public(listing.title, listing.description, &canonical);
+    let body = templates::render_page(listing.template, &templates::with_layout(ctx, &meta, data))?;
+    let keys: Vec<&str> = listing.keys.iter().map(String::as_str).collect();
+    Ok(cache::page(html(body), &keys))
+}
+
+pub fn home(req: &Request, ctx: &Ctx) -> Result<Response, Error> {
+    let index = kv::read_index(&kv::content()?)?;
+    render_listing(
+        req,
+        ctx,
+        Listing {
+            template: "home",
+            base: "/",
+            title: "Home",
+            description: DEFAULT_DESCRIPTION,
+            posts: index.published(),
+            all_tags: index.all_tags(),
+            extra: json!({}),
+            keys: vec!["post-index".into(), "sidebar".into()],
+        },
+    )
+}
+
+pub fn tag(req: &Request, ctx: &Ctx, tag_name: &str) -> Result<Response, Error> {
+    let base = format!("/tag/{tag_name}");
+    if !is_valid_tag(tag_name) {
+        return Ok(error::not_found(ctx, &base));
+    }
+    let index = kv::read_index(&kv::content()?)?;
+    let title = format!("Posts tagged \"{tag_name}\"");
+    render_listing(
+        req,
+        ctx,
+        Listing {
+            template: "tag",
+            base: &base,
+            title: &title,
+            description: &title,
+            posts: index.by_tag(tag_name),
+            all_tags: index.all_tags(),
+            extra: json!({ "tag": tag_name }),
+            keys: vec![
+                "post-index".into(),
+                "sidebar".into(),
+                format!("tag-{tag_name}"),
+            ],
+        },
+    )
+}
+
+/// schema.org `BlogPosting` for the post page.
+pub fn json_ld(post: &Post, canonical_url: &str, image_url: &str) -> Value {
+    let mut ld = json!({
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": post.title,
+        "description": post.excerpt,
+        "datePublished": post.created_at,
+        "dateModified": post.updated_at,
+        "author": { "@type": "Person", "name": post.author },
+        "mainEntityOfPage": canonical_url,
+        "publisher": { "@type": "Organization", "name": SITE_NAME },
+    });
+    if !image_url.is_empty() {
+        ld["image"] = Value::String(image_url.to_string());
+    }
+    ld
+}
+
+pub fn post(ctx: &Ctx, slug: &str) -> Result<Response, Error> {
+    let path = format!("/post/{slug}");
+    if !is_valid_slug(slug) {
+        return Ok(error::not_found(ctx, &path));
+    }
+    let store = kv::content()?;
+    let post = match kv::get_json::<Post>(&store, &kv::post_key(slug))? {
+        Some(p) if p.status == PostStatus::Published => p,
+        _ => return Ok(error::not_found(ctx, &path)),
     };
 
-    // Draft posts are not publicly visible
-    if post.status == PostStatus::Draft {
-        return crate::error::not_found();
-    }
-
-    let index = read_index()?;
-    let sidebar = read_sidebar()?;
-    let all_tags = index.all_tags();
-    let (pop_city, pop_code) = geo_context(req);
-    let rendered_content = markdown::rewrite_images(&markdown::render_markdown(&post.content));
-    let canonical_url = format!("/post/{}", slug);
+    let index = kv::read_index(&store)?;
+    let sidebar = kv::read_sidebar(&store)?;
+    let canonical_url = ctx.absolute(&path);
+    let image_url = templates::absolute_url(&ctx.site_url, post.featured_image.as_deref());
+    let description = if post.excerpt.trim().is_empty() {
+        DEFAULT_DESCRIPTION
+    } else {
+        post.excerpt.as_str()
+    };
 
     let data = json!({
         "slug": post.slug,
@@ -148,147 +176,207 @@ pub fn post(req: &Request, slug: &str) -> Result<Response, Error> {
         "tags": post.tags,
         "featured_image": post.featured_image,
         "author": post.author,
-        "rendered_content": rendered_content,
-        "canonical_url": canonical_url,
-        "page_title": post.title,
-        "og_title": post.title,
-        "og_description": post.excerpt,
-        "og_type": "article",
-        "og_image": post.featured_image,
-        "og_url": canonical_url,
-        "sidebar": sidebar,
-        "all_tags": all_tags,
-        "pop_city": pop_city,
-        "pop_code": pop_code,
+        "rendered_content": markdown::render_post_html(&post.content),
+        "json_ld": templates::script_safe_json(&json_ld(&post, &canonical_url, &image_url)),
+        "share_url_encoded": templates::percent_encode(&canonical_url),
+        "share_title_encoded": templates::percent_encode(&post.title),
+        "sidebar": templates::sidebar_view(&sidebar),
+        "all_tags": index.all_tags(),
     });
-
-    let html = templates::render_page("post", &data)?;
-    let surrogate_key = format!("post-{}", slug);
-    let resp = Response::from_status(StatusCode::OK)
-        .with_header("Content-Type", "text/html; charset=utf-8")
-        .with_body(html);
-
-    Ok(CacheHeaders::page(vec![&surrogate_key, "sidebar"]).apply(resp))
+    let meta = PageMeta {
+        og_type: "article",
+        og_image: post.featured_image.as_deref(),
+        ..PageMeta::public(&post.title, description, &path)
+    };
+    let body = templates::render_page("post", &templates::with_layout(ctx, &meta, data))?;
+    let post_key = format!("post-{slug}");
+    Ok(cache::page(html(body), &[&post_key, "sidebar"]))
 }
 
-pub fn tag(req: &Request, tag_name: &str) -> Result<Response, Error> {
-    let index = read_index()?;
-    let sidebar = read_sidebar()?;
-    let (pop_city, pop_code) = geo_context(req);
-
-    let filtered: Vec<_> = index.by_tag(tag_name).into_iter().cloned().collect();
-    let all_tags = index.all_tags();
-
-    let data = json!({
-        "tag": tag_name,
-        "posts": filtered,
-        "sidebar": sidebar,
-        "all_tags": all_tags,
-        "pop_city": pop_city,
-        "pop_code": pop_code,
-        "page_title": format!("Posts tagged \"{}\"", tag_name),
-    });
-
-    let html = templates::render_page("tag", &data)?;
-    let resp = Response::from_status(StatusCode::OK)
-        .with_header("Content-Type", "text/html; charset=utf-8")
-        .with_body(html);
-
-    Ok(CacheHeaders::page(vec!["post-index", "sidebar"]).apply(resp))
-}
-
-pub fn feed(_req: &Request) -> Result<Response, Error> {
-    let index = read_index()?;
-    let published: Vec<_> = index.published();
-    let items: Vec<_> = published.into_iter().take(20).collect();
-
-    let mut xml = String::from(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
-<channel>
-  <title>edge/cms</title>
-  <description>A CMS running entirely on Fastly Compute</description>
-  <link>/</link>
-"#,
+pub fn build_feed(site_url: &str, posts: &[&PostMeta], now: u64) -> String {
+    let last_build = posts
+        .iter()
+        .filter_map(|p| dates::rfc822(p.last_modified()))
+        .next()
+        .unwrap_or_else(|| dates::rfc822_from_unix(now));
+    let mut xml = format!(
+        concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<rss version=\"2.0\" xmlns:atom=\"http://www.w3.org/2005/Atom\">\n",
+            "<channel>\n",
+            "  <title>{name}</title>\n",
+            "  <description>{desc}</description>\n",
+            "  <link>{site}/</link>\n",
+            "  <atom:link href=\"{site}/feed.xml\" rel=\"self\" type=\"application/rss+xml\"/>\n",
+            "  <lastBuildDate>{build}</lastBuildDate>\n",
+        ),
+        name = xml_escape(SITE_NAME),
+        desc = xml_escape(DEFAULT_DESCRIPTION),
+        site = xml_escape(site_url),
+        build = last_build,
     );
-
-    for post in &items {
+    for post in posts {
+        let link = xml_escape(&format!("{site_url}/post/{}", post.slug));
         xml.push_str("  <item>\n");
         xml.push_str(&format!("    <title>{}</title>\n", xml_escape(&post.title)));
-        xml.push_str(&format!("    <link>/post/{}</link>\n", post.slug));
-        xml.push_str(&format!(
-            "    <guid isPermaLink=\"true\">/post/{}</guid>\n",
-            post.slug
-        ));
+        xml.push_str(&format!("    <link>{link}</link>\n"));
+        xml.push_str(&format!("    <guid isPermaLink=\"true\">{link}</guid>\n"));
         xml.push_str(&format!(
             "    <description>{}</description>\n",
             xml_escape(&post.excerpt)
         ));
-        xml.push_str(&format!("    <pubDate>{}</pubDate>\n", post.created_at));
+        if let Some(date) = dates::rfc822(&post.created_at) {
+            xml.push_str(&format!("    <pubDate>{date}</pubDate>\n"));
+        }
         xml.push_str("  </item>\n");
     }
-
     xml.push_str("</channel>\n</rss>\n");
+    xml
+}
 
+pub fn feed(ctx: &Ctx) -> Result<Response, Error> {
+    let index = kv::read_index(&kv::content()?)?;
+    let published = index.published();
+    let items = &published[..published.len().min(FEED_ITEMS)];
     let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "application/rss+xml; charset=utf-8")
-        .with_body(xml);
-
-    Ok(CacheHeaders::page(vec!["post-index"]).apply(resp))
+        .with_body(build_feed(&ctx.site_url, items, dates::unix_now()));
+    Ok(cache::feed(resp))
 }
 
-pub fn sitemap(_req: &Request) -> Result<Response, Error> {
-    let index = read_index()?;
-    let published = index.published();
-
-    let mut xml = String::from(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>/</loc>
-  </url>
-"#,
-    );
-
-    for post in &published {
-        xml.push_str("  <url>\n");
-        xml.push_str(&format!("    <loc>/post/{}</loc>\n", post.slug));
-        xml.push_str(&format!(
-            "    <lastmod>{}</lastmod>\n",
-            lastmod(&post.created_at)
-        ));
-        xml.push_str("  </url>\n");
+pub fn build_sitemap(site_url: &str, posts: &[&PostMeta], tags: &[String]) -> String {
+    let url = |loc: &str, lastmod: Option<&str>| {
+        let mut s = format!("  <url>\n    <loc>{}</loc>\n", xml_escape(loc));
+        if let Some(m) = lastmod {
+            s.push_str(&format!("    <lastmod>{}</lastmod>\n", xml_escape(m)));
+        }
+        s.push_str("  </url>\n");
+        s
+    };
+    let mut xml = String::from(concat!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+        "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n",
+    ));
+    xml.push_str(&url(&format!("{site_url}/"), None));
+    for tag in tags {
+        xml.push_str(&url(&format!("{site_url}/tag/{tag}"), None));
     }
-
+    for post in posts {
+        xml.push_str(&url(
+            &format!("{site_url}/post/{}", post.slug),
+            Some(post.last_modified()),
+        ));
+    }
     xml.push_str("</urlset>\n");
+    xml
+}
 
+pub fn sitemap(ctx: &Ctx) -> Result<Response, Error> {
+    let index = kv::read_index(&kv::content()?)?;
     let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "application/xml; charset=utf-8")
-        .with_body(xml);
-
-    Ok(CacheHeaders::page(vec!["post-index"]).apply(resp))
+        .with_body(build_sitemap(
+            &ctx.site_url,
+            &index.published(),
+            &index.all_tags(),
+        ));
+    Ok(cache::feed(resp))
 }
 
-pub fn robots() -> Result<Response, Error> {
-    let body = "User-agent: *\nAllow: /\nSitemap: /sitemap.xml\n";
+pub fn robots_txt(site_url: &str) -> String {
+    format!("User-agent: *\nDisallow: /admin\nDisallow: /api/\nSitemap: {site_url}/sitemap.xml\n")
+}
+
+pub fn robots(ctx: &Ctx) -> Result<Response, Error> {
     let resp = Response::from_status(StatusCode::OK)
         .with_header("Content-Type", "text/plain; charset=utf-8")
-        .with_body(body);
-    Ok(CacheHeaders::page(vec!["post-index"]).apply(resp))
+        .with_body(robots_txt(&ctx.site_url));
+    Ok(cache::feed(resp))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn lastmod_takes_date_part() {
-        assert_eq!(lastmod("2026-05-22T10:00:00Z"), "2026-05-22");
+    const SITE: &str = "https://blog.example.com";
+
+    fn meta(slug: &str, title: &str, updated: Option<&str>) -> PostMeta {
+        PostMeta {
+            slug: slug.into(),
+            title: title.into(),
+            excerpt: "x & y".into(),
+            status: PostStatus::Published,
+            created_at: "2026-05-20T14:30:00Z".into(),
+            updated_at: updated.map(Into::into),
+            tags: vec![],
+            featured_image: None,
+        }
     }
 
     #[test]
-    fn lastmod_short_input_does_not_panic() {
-        assert_eq!(lastmod("2026"), "2026");
-        assert_eq!(lastmod(""), "");
+    fn robots_content() {
+        assert_eq!(
+            robots_txt(SITE),
+            "User-agent: *\nDisallow: /admin\nDisallow: /api/\nSitemap: https://blog.example.com/sitemap.xml\n"
+        );
+    }
+
+    #[test]
+    fn feed_is_absolute_escaped_and_rfc822() {
+        let p = meta("a", "<b>Tom & Jerry</b>", Some("2026-06-01T08:00:00Z"));
+        let xml = build_feed(SITE, &[&p], 0);
+        assert!(xml.contains("<link>https://blog.example.com/post/a</link>"));
+        assert!(xml.contains("<title>&lt;b&gt;Tom &amp; Jerry&lt;/b&gt;</title>"));
+        assert!(xml.contains("<description>x &amp; y</description>"));
+        assert!(xml.contains("<pubDate>Wed, 20 May 2026 14:30:00 +0000</pubDate>"));
+        assert!(xml.contains("<lastBuildDate>Mon, 01 Jun 2026 08:00:00 +0000</lastBuildDate>"));
+        assert!(xml.contains(
+            r#"<atom:link href="https://blog.example.com/feed.xml" rel="self" type="application/rss+xml"/>"#
+        ));
+        assert!(xml.contains(r#"xmlns:atom="http://www.w3.org/2005/Atom""#));
+    }
+
+    #[test]
+    fn feed_empty_uses_now_for_last_build() {
+        let xml = build_feed(SITE, &[], 0);
+        assert!(xml.contains("<lastBuildDate>Thu, 01 Jan 1970 00:00:00 +0000</lastBuildDate>"));
+    }
+
+    #[test]
+    fn sitemap_absolute_with_lastmod_fallback() {
+        let a = meta("a", "A", Some("2026-06-01T08:00:00Z"));
+        let b = meta("b", "B", None);
+        let xml = build_sitemap(SITE, &[&a, &b], &["rust".to_string()]);
+        assert!(xml.contains("<loc>https://blog.example.com/</loc>"));
+        assert!(xml.contains("<loc>https://blog.example.com/tag/rust</loc>"));
+        assert!(xml.contains("<loc>https://blog.example.com/post/a</loc>\n    <lastmod>2026-06-01T08:00:00Z</lastmod>"));
+        assert!(xml.contains("<loc>https://blog.example.com/post/b</loc>\n    <lastmod>2026-05-20T14:30:00Z</lastmod>"));
+    }
+
+    #[test]
+    fn json_ld_shape() {
+        let post = Post {
+            slug: "a".into(),
+            title: "T".into(),
+            content: String::new(),
+            excerpt: "E".into(),
+            status: PostStatus::Published,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-02T00:00:00Z".into(),
+            tags: vec![],
+            featured_image: None,
+            author: "Admin".into(),
+        };
+        let ld = json_ld(&post, "https://x/post/a", "https://x/images/a.jpg");
+        assert_eq!(ld["@type"], "BlogPosting");
+        assert_eq!(ld["headline"], "T");
+        assert_eq!(ld["description"], "E");
+        assert_eq!(ld["datePublished"], "2026-01-01T00:00:00Z");
+        assert_eq!(ld["dateModified"], "2026-01-02T00:00:00Z");
+        assert_eq!(ld["author"]["name"], "Admin");
+        assert_eq!(ld["image"], "https://x/images/a.jpg");
+        assert_eq!(ld["mainEntityOfPage"], "https://x/post/a");
+        assert_eq!(ld["publisher"]["name"], "edge/cms");
+        assert!(json_ld(&post, "u", "").get("image").is_none());
     }
 }

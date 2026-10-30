@@ -14,6 +14,14 @@ fos_bucket = "edge-cms-images"
 # Find codes at: https://developer.fastly.com/reference/api/utils/pops/
 shield_pop = "iad-va-us"
 
-# Optional: HTTPS log drain
+# Optional: extra Compute implementations the VCL service can route to via
+# active_backend=go|ts. Leave unset (default "") if that service isn't deployed —
+# no backend or DNS record is created and active_backend falls back to Rust.
+# go_backend_host = "app-go.edge-cms.example.com"
+# ts_backend_host = "app-ts.edge-cms.example.com"
+
+# Optional: HTTPS log drain (Compute app logs, endpoint edge-cms-app-logs)
 # logging_endpoint_url = "https://your-log-drain.example.com/logs"
 # logging_token        = "your-logging-auth-token"
+# Also send VCL CDN request logs there (truncated IPs, paths only). Default off.
+# enable_vcl_logging   = true

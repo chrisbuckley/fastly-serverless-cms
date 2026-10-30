@@ -1,6 +1,6 @@
 # Edge CMS: A CMS Running Entirely on Fastly
 
-A fully-functional content management system that runs entirely at the edge — no origin servers, no databases, no traditional infrastructure. Every request is handled by Fastly Compute, with content stored in KV Store and images in Object Store.
+A fully-functional content management system that runs entirely at the edge — no origin servers, no databases, no traditional infrastructure. Every request is handled by Fastly Compute, with content stored in KV Store and images in Fastly Object Storage.
 
 Edge CMS demonstrates how Fastly's product suite composes into a real, deployable application. It ships with a reader-facing blog, an admin interface with a split-pane markdown editor, image uploads, RSS feeds, sitemaps, and cache management — all running on Fastly's global edge network.
 
@@ -8,58 +8,90 @@ Edge CMS demonstrates how Fastly's product suite composes into a real, deployabl
 
 | Product | Purpose |
 |---------|---------|
-| **Compute** | Application runtime — all request logic runs at the edge in a Rust WASM binary |
-| **KV Store** | Post content, post index, and sidebar configuration |
-| **Config Store** | Cache TTL configuration — change page/asset/image TTLs live without redeploying |
-| **Object Store** | Image uploads (binary blobs), served via FOS |
-| **Secret Store** | Admin password (bcrypt hash), session HMAC key, FOS credentials, Fastly API token |
-| **VCL CDN Service** | Public CDN layer — caches reader responses, serves images directly from FOS, rate-limits login |
+| **Compute** | Application runtime — all request logic runs at the edge (Rust WASM; TypeScript and Go parity backends exist) |
+| **KV Store** | Post content, post index, sidebar configuration, revisions, soft-deleted posts, revoked sessions |
+| **Config Store** | `site_url`, cache TTLs and `page_size` — change live without redeploying |
+| **Object Storage** | Image uploads, served to readers by the VCL service (SigV4-signed, read-only key) |
+| **Secret Store** | Admin password (bcrypt hash), session HMAC key, origin auth token, Fastly API token, Object Storage read-write key |
+| **VCL CDN Service** | Public layer — forces TLS, sends HSTS, caches reader responses, serves images, injects the origin auth header, coarse login rate limit |
+| **Edge Rate Limiting** | Login brute-force protection: precise limit in Compute, coarse flood limit in VCL |
 | **Image Optimizer** | On-the-fly image resizing and WebP conversion via query params |
-| **Surrogate Keys + Purge API** | Targeted cache invalidation when posts are created, updated, or deleted |
-| **Rate Limiting** | Brute-force protection on `POST /admin/login` |
-| **Geolocation** | Nearest POP name and code for reader-facing footer badge |
-| **Real-time Log Streaming** | Optional HTTPS log drain for request telemetry |
+| **Surrogate Keys + Purge API** | Targeted cache invalidation when content changes |
+| **Real-time Log Streaming** | Optional HTTPS log drain (truncated client IPs, no query strings) |
 
 ## Architecture
 
 ```
 Browser
-  │
+  │  HTTPS only (HTTP → 301, HSTS)
   ▼
-┌─────────────────────────────────────┐
-│  VCL CDN Service  (edge-cms)        │
-│  • Caches reader responses          │
-│  • Serves /images/* from FOS        │
-│  • Rate-limits POST /admin/login    │
-│  • Enables Image Optimizer          │
-└──────────┬──────────────────────────┘
-           │ non-image requests
+┌──────────────────────────────────────────┐
+│  VCL CDN Service  (edge-cms)             │
+│  • Force TLS + HSTS                      │
+│  • Coarse ERL on POST /admin/login       │
+│  • Caches reader responses               │
+│  • Serves /images/* from Object Storage  │
+│  • Injects Edge-CMS-Origin-Auth header   │
+└──────────┬───────────────────────────────┘
+           │ non-image requests (+ origin auth header)
            ▼
-┌─────────────────────────────────────┐
-│  Compute Service  (edge-cms-app)    │
-│  • Routing, templating, auth        │
-│  • Reads/writes KV Store            │
-│  • Reads secrets from Secret Store  │
-│  • Reads TTLs from Config Store     │
-│  • Purges VCL cache on writes       │
-│  • Writes images to FOS             │
-└──────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│  Compute Service  (edge-cms-app-rust)    │
+│  • Rejects requests without the header   │
+│  • Routing, templating, auth, CSRF       │
+│  • Security headers + CSP on every reply │
+│  • ERL login limit (5/min/IP)            │
+│  • KV / Secret Store / Config Store      │
+│  • Purges VCL cache, uploads to FOS      │
+└──────────────────────────────────────────┘
 ```
 
 **Two services, two domains:**
 
 | Service | Domain | Role |
 |---------|--------|------|
-| VCL CDN | `your-domain.com` | Public-facing; handles caching, image serving, rate limiting |
-| Compute | `app.your-domain.com` | Internal; VCL uses this as its backend |
+| VCL CDN | `your-domain.com` | Public-facing; TLS, caching, image serving, origin auth injection |
+| Compute | `app.your-domain.com` | Origin for the VCL service; refuses anything that did not come through it |
 
-DNS for both points to `j.sni.global.fastly.net`. Only the VCL service domain is public-facing — the `app.*` subdomain is the Compute service acting as an internal origin.
+`app.your-domain.com` is publicly resolvable, but Compute returns `403` to any request that lacks a valid `Edge-CMS-Origin-Auth` header, so it cannot be used to bypass the CDN layer.
+
+### Request path and the controls on it
+
+1. **VCL, first hop:** plain HTTP gets a `301` to HTTPS; every response carries `Strict-Transport-Security: max-age=31536000; includeSubDomains`. `Fastly-Client-IP` is overwritten with the real client IP and any client-supplied `Edge-CMS-Origin-Auth` is stripped.
+2. **VCL → Compute:** on every backend request to Compute (`vcl_miss` and `vcl_pass`), VCL sets `Edge-CMS-Origin-Auth` from the private dictionary `edge_cms_private` (key `origin_auth_token`). Never for `/images/*`.
+3. **Compute, first thing:** compares the header (constant time) with Secret Store entry `origin_auth_token`. Missing secret, missing header or mismatch: `403`.
+4. **Compute, every response:** CSP, `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options: DENY`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`. `/admin` also gets `X-Robots-Tag: noindex, nofollow`. Templates therefore have no inline script, style or `on*=` handlers.
+5. **CSRF (all non-GET/HEAD `/admin` requests, including login):** `Sec-Fetch-Site` if present must be `same-origin` (or `none`); otherwise `Origin` must equal `site_url`; otherwise `403`.
+6. **Login limit:** Compute ERL allows 5 `POST /admin/login` per 60 s per client IP, then a 15-minute penalty box (`429`, `Retry-After: 900`). VCL adds a coarse limit at the minimum the VCL limiter supports (10 rps averaged over 60 s) that only stops floods.
+7. **Sessions:** `v1.<expires>.<nonce>.<sig>` tokens (HMAC-SHA256, 1 h), cookie `HttpOnly; Secure; SameSite=Strict; Path=/admin`. Logout writes `session-revoked:<nonce>` to KV, so a stolen token stops working immediately. Pre-v1 tokens are rejected.
+8. **Input validation (identical in all backends):** slug, title, excerpt, content (512 KiB), tags, status, bodies (1 MiB), sidebar JSON (64 KiB, 50 items, URL scheme allowlist).
+9. **Markdown** is rendered, then sanitized with an allowlist (Rust `ammonia`, TypeScript `xss`, Go `bluemonday`). `<script>`, event handlers and `javascript:`/`data:` URLs are removed; `<iframe>` survives only for `youtube-nocookie.com`, `youtube.com` and `player.vimeo.com`.
+10. **Uploads:** `POST /admin/images`, max 10 MiB, filename `^[a-z0-9][a-z0-9_-]{0,63}\.(jpg|jpeg|png|webp|gif)$`, type detected from magic bytes and must match the extension; that detected type is what is stored. SVG and everything else: `415`.
+11. **Images out:** VCL serves only `/images/<slug>/<file>.(jpg|jpeg|png|webp|gif)`, forces `Content-Type` from the extension, and adds `nosniff` plus `Content-Security-Policy: default-src 'none'; sandbox`. Compute returns `404` for `/images/*`.
+
+Fonts (Fraunces, DM Sans, JetBrains Mono) are self-hosted from `/assets/fonts/`; the site makes no third-party requests.
+
+---
+
+## Security model
+
+**Controls** — see the request path above, plus: least-privilege Object Storage keys (read-only for VCL, read-write-objects for Compute, neither can manage buckets); content KV store protected by `prevent_destroy`/`force_destroy = false`; secrets never on a command line (`--stdin`, `read -rs`) or in Terraform state except the generated origin auth token and Object Storage keys (see the state warning below); explicit DNS records instead of a wildcard CNAME; CI dependency audit, secret scanning and SHA-pinned actions.
+
+**Residual risks — know these before you rely on it:**
+
+- **Single shared admin password, no MFA.** There are no per-user accounts. Use a long random password; the ERL limit and bcrypt slow guessing but do not replace a second factor. Consider NGWAF or an IP allowlist in front of `/admin` for anything sensitive.
+- **ERL fails open in Compute.** If the ERL host calls themselves error, the login limit is skipped (and logged); only the coarse VCL limit remains.
+- **KV eventual consistency vs purge.** Compute purges after writing KV, but a read in a POP that has not yet seen the new KV value can re-cache stale content after the purge. Pages use `stale-while-revalidate=60`; a repeat edit or a second purge fixes it. Session revocation is also KV-based, so a revoked session may remain valid briefly in other POPs.
+- **VCL → Compute shielding.** The auth header is set in `vcl_miss`/`vcl_pass`, which also run on the shield node, and the first-hop snippet strips any inbound copy. This design relies on Fastly's generated VCL ordering; verify it in the generated VCL (Fastly UI → Show VCL) and with the smoke tests below after every VCL change.
+- **HSTS `includeSubDomains`.** Once a browser has seen the header it will refuse plain HTTP for every subdomain of `var.domain`. If `var.domain` is a zone apex this covers the whole domain, so every other subdomain must serve valid HTTPS. There is no `preload`. Removing it later only takes effect as the one-year max-age expires per browser.
+- **Terraform state holds secrets** (origin auth token, Object Storage keys, logging token). Use an encrypted remote backend (commented examples in `terraform/providers.tf`) and restrict access.
+- **Rotation:** `terraform apply -replace=random_password.origin_auth_token`, then rewrite the dictionary item first and the secret second (brief `403`s for requests in flight between the two writes).
 
 ---
 
 ## Prerequisites
 
-- **Fastly account** with Compute enabled
+- **Fastly account** with Compute, Object Storage and Edge Rate Limiting available
 - **Fastly CLI** installed and authenticated:
   ```bash
   brew install fastly/tap/fastly   # macOS
@@ -70,491 +102,37 @@ DNS for both points to `j.sni.global.fastly.net`. Only the VCL service domain is
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   rustup target add wasm32-wasip1
   ```
-- **Python + bcrypt** (to hash your admin password):
-  ```bash
-  pip install bcrypt
-  ```
-- **AWS CLI** (to create the Object Storage bucket):
-  ```bash
-  brew install awscli   # macOS
-  ```
+- **Terraform** >= 1.5
+- **jq** (post-apply steps feed JSON to the CLI)
+- **Python + bcrypt** (to hash your admin password): `pip install bcrypt`
+- **AWS CLI** (one-off, to create the Object Storage bucket): `brew install awscli`
 - **A domain you control** with access to create CNAME records
-- **For Terraform path:** Terraform >= 1.5
+
+> **Why Terraform only?** The VCL service is about twenty snippets, three dictionaries and several settings that must stay consistent with the Compute code (origin auth, force-TLS, rate limiting, image hardening). `terraform/vcl.tf` is the single source of truth; a hand-built CLI equivalent is no longer maintained. The Compute app alone can still be deployed with `fastly compute deploy` for experiments, but it will answer `403` to everything without the VCL service in front of it.
 
 ---
 
-## Installation: Fastly CLI
+## Installation: new deployment
 
-This path creates every resource using the Fastly CLI. The VCL CDN service has several moving parts (snippets, dictionaries, rate limiter) — if you prefer infrastructure-as-code, use the Terraform path instead.
+All commands run from the repo root unless noted.
 
 ### Step 1 — Build the Compute package
 
 ```bash
-cd edge-cms/rust/
-fastly compute build
+cd rust/
+fastly compute build        # produces rust/pkg/edge-cms.tar.gz
+cd ..
 ```
 
-This produces `rust/pkg/edge-cms.tar.gz`.
-
-### Step 2 — Create the KV Stores
+### Step 2 — Configure Terraform
 
 ```bash
-# Post content, index, sidebar config
-fastly kv-store create --name=edge-cms-content
-
-# Note the store ID from the output — you'll need it later
-# Example output: SUCCESS Created KV store 'edge-cms-content' (id: abc123...)
-```
-
-The local `fastly.toml` also references an `images` KV store for local development.
-In production, images go to Fastly Object Storage — the VCL service intercepts `/images/*`
-before it reaches Compute. The `images` KV store is not needed in production.
-
-### Step 3 — Create the Secret Store
-
-```bash
-fastly secret-store create --name=edge-cms-secrets
-
-# Note the store ID from the output
-```
-
-### Step 4 — Create Object Storage credentials and bucket
-
-Create an access key pair with read-write access to your image bucket:
-
-```bash
-fastly object-storage access-keys create \
-  --description="edge-cms image store" \
-  --permission=read-write-admin
-
-# Note the access_key_id and secret_key from the output.
-# The secret_key is shown ONCE — save it immediately.
-```
-
-Create the bucket (uses AWS CLI against the Fastly Object Storage endpoint):
-
-```bash
-export AWS_ACCESS_KEY_ID=<your-fos-access-key-id>
-export AWS_SECRET_ACCESS_KEY=<your-fos-secret-key>
-
-aws s3 mb s3://edge-cms-images \
-  --endpoint-url https://us-east-1.object.fastlystorage.app \
-  --region us-east-1
-```
-
-Adjust the region (`us-east-1`, `eu-central-1`, `ap-southeast-1`) to match where you want images stored.
-
-### Step 5 — Deploy the Compute service
-
-```bash
-cd edge-cms/rust/
-fastly compute deploy
-```
-
-When prompted, choose to link your existing KV Store (`edge-cms-content`) to the `content` resource link, and your existing Secret Store (`edge-cms-secrets`) to the `secrets` resource link. The deploy will create a new Compute service and output its service ID.
-
-Note the service domain — it will be something like `<hash>.edgecompute.app`. You'll assign your own `app.` subdomain later.
-
-**After deploy, add your domain to the Compute service:**
-
-```bash
-export COMPUTE_SID=<your-compute-service-id>
-
-fastly domain create \
-  --service-id=$COMPUTE_SID \
-  --version=latest --autoclone \
-  --name=app.your-domain.com
-
-fastly service-version activate \
-  --service-id=$COMPUTE_SID \
-  --version=latest
-```
-
-**Add the Fastly Purge API backend** (Compute calls this to invalidate the CDN cache on writes):
-
-```bash
-fastly backend create \
-  --service-id=$COMPUTE_SID \
-  --version=latest --autoclone \
-  --name=fastly-api \
-  --address=api.fastly.com \
-  --port=443 \
-  --use-ssl \
-  --ssl-cert-hostname=api.fastly.com \
-  --ssl-sni-hostname=api.fastly.com
-
-fastly backend create \
-  --service-id=$COMPUTE_SID \
-  --version=latest --autoclone \
-  --name=fastly-object-storage \
-  --address=us-east-1.object.fastlystorage.app \
-  --port=443 \
-  --use-ssl \
-  --ssl-cert-hostname=us-east-1.object.fastlystorage.app \
-  --ssl-sni-hostname=us-east-1.object.fastlystorage.app
-
-fastly service-version activate \
-  --service-id=$COMPUTE_SID --version=latest
-```
-
-### Step 6 — Create and link the Config Store
-
-The Config Store holds cache TTLs that the Compute app reads at runtime. Values can be changed live without redeploying.
-
-```bash
-# Create the store
-fastly config-store create --name=edge-cms-cache-config
-export CSID=<config-store-id from output>
-
-# Populate cache TTLs (values in seconds)
-fastly config-store-entry create --store-id=$CSID --key=page_ttl --value=2592000    # 30 days
-fastly config-store-entry create --store-id=$CSID --key=asset_ttl --value=31536000   # 1 year
-fastly config-store-entry create --store-id=$CSID --key=image_ttl --value=31536000   # 1 year
-
-# Link to the Compute service
-fastly resource-link create \
-  --service-id=$COMPUTE_SID \
-  --version=latest --autoclone \
-  --resource-id=$CSID \
-  --name=cache_config
-
-fastly service-version activate \
-  --service-id=$COMPUTE_SID --version=latest
-```
-
-### Step 7 — Populate the Secret Store
-
-The Secret Store holds 8 keys. The Compute app will fail to start if any required secret is missing.
-
-```bash
-export SSID=<your-secret-store-id>
-
-# 1. Admin password — bcrypt hash
-BCRYPT=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'YOUR_ADMIN_PASSWORD', bcrypt.gensalt()).decode())")
-echo -n "$BCRYPT" | fastly secret-store-entry create \
-  --store-id=$SSID --name=admin_password --stdin --recreate-allow
-
-# 2. Session HMAC signing key — random 32 bytes, base64-encoded
-echo -n "$(openssl rand -base64 32)" | fastly secret-store-entry create \
-  --store-id=$SSID --name=hmac_key --stdin --recreate-allow
-
-# 3. Fastly API token — must have purge scope on the VCL CDN service
-#    Create a token at https://manage.fastly.com/account/personal/tokens
-#    Scope: purge_select on the VCL service, or use a full-access token
-echo -n 'YOUR_PURGE_API_TOKEN' | fastly secret-store-entry create \
-  --store-id=$SSID --name=fastly_api_token --stdin --recreate-allow
-
-# 4. VCL CDN service ID — Compute purges this service on content writes
-#    (Populate after creating the VCL service in Step 7)
-echo -n 'YOUR_VCL_SERVICE_ID' | fastly secret-store-entry create \
-  --store-id=$SSID --name=purge_service_id --stdin --recreate-allow
-
-# 5. Object Storage credentials
-echo -n 'YOUR_FOS_ACCESS_KEY_ID' | fastly secret-store-entry create \
-  --store-id=$SSID --name=fos_access_key_id --stdin --recreate-allow
-
-echo -n 'YOUR_FOS_SECRET_KEY' | fastly secret-store-entry create \
-  --store-id=$SSID --name=fos_secret_key --stdin --recreate-allow
-
-# 6. Object Storage region and bucket name
-echo -n 'us-east-1' | fastly secret-store-entry create \
-  --store-id=$SSID --name=fos_region --stdin --recreate-allow
-
-echo -n 'edge-cms-images' | fastly secret-store-entry create \
-  --store-id=$SSID --name=fos_bucket --stdin --recreate-allow
-```
-
-**Secret reference table:**
-
-| Key | Description | Source |
-|-----|-------------|--------|
-| `admin_password` | bcrypt hash of your admin password | Generate with Python `bcrypt` |
-| `hmac_key` | Session cookie signing key | `openssl rand -base64 32` |
-| `fastly_api_token` | Token with purge scope on VCL service | Fastly account → API tokens |
-| `purge_service_id` | VCL CDN service ID | Output of Step 8 |
-| `fos_access_key_id` | Object Storage access key ID | Output of Step 4 |
-| `fos_secret_key` | Object Storage secret key | Output of Step 4 (shown once) |
-| `fos_region` | Object Storage region | e.g. `us-east-1` |
-| `fos_bucket` | Object Storage bucket name | e.g. `edge-cms-images` |
-
-### Step 8 — Create the VCL CDN service
-
-The VCL service is the public-facing CDN layer. It caches reader responses, serves images directly from Object Storage with SigV4 signing, and rate-limits login attempts.
-
-**Create the service:**
-
-```bash
-fastly service create --type=vcl --name=edge-cms
-export VCL_SID=<service-id from output>
-
-fastly domain create \
-  --service-id=$VCL_SID --version=latest --autoclone \
-  --name=your-domain.com
-```
-
-**Add backends:**
-
-```bash
-# Backend: Compute app (default for all non-image requests)
-fastly backend create \
-  --service-id=$VCL_SID --version=latest --autoclone \
-  --name=edge-cms-compute \
-  --address=app.your-domain.com \
-  --port=443 --use-ssl \
-  --ssl-cert-hostname=app.your-domain.com \
-  --ssl-sni-hostname=app.your-domain.com \
-  --override-host=app.your-domain.com \
-  --shield=iad-va-us
-
-# Backend: Fastly Object Storage (for image requests)
-fastly backend create \
-  --service-id=$VCL_SID --version=latest --autoclone \
-  --name=edge-cms-fos \
-  --address=us-east-1.object.fastlystorage.app \
-  --port=443 --use-ssl \
-  --ssl-cert-hostname=us-east-1.object.fastlystorage.app \
-  --ssl-sni-hostname=us-east-1.object.fastlystorage.app \
-  --override-host=us-east-1.object.fastlystorage.app \
-  --shield=iad-va-us
-```
-
-**Create private dictionary for Object Storage SigV4 credentials:**
-
-```bash
-fastly service-dictionary create \
-  --service-id=$VCL_SID --version=latest --autoclone \
-  --name=edge_cms_fos_creds --write-only
-
-fastly service-dictionary create \
-  --service-id=$VCL_SID --version=latest --autoclone \
-  --name=edge_cms_rate_limit_uris
-
-fastly service-dictionary create \
-  --service-id=$VCL_SID --version=latest --autoclone \
-  --name=edge_cms_config
-
-# Note the dictionary IDs from the output
-export FOS_DICT_ID=<edge_cms_fos_creds dictionary id>
-export RL_DICT_ID=<edge_cms_rate_limit_uris dictionary id>
-export CFG_DICT_ID=<edge_cms_config dictionary id>
-
-# Populate the FOS credentials dictionary
-fastly service-dictionary-item create \
-  --service-id=$VCL_SID --dictionary-id=$FOS_DICT_ID \
-  --key=access_key_id --value=YOUR_FOS_ACCESS_KEY_ID
-
-fastly service-dictionary-item create \
-  --service-id=$VCL_SID --dictionary-id=$FOS_DICT_ID \
-  --key=secret_key --value=YOUR_FOS_SECRET_KEY
-
-# Populate the rate-limit URI list
-fastly service-dictionary-item create \
-  --service-id=$VCL_SID --dictionary-id=$RL_DICT_ID \
-  --key=/admin/login --value=1
-
-# Populate the config dictionary — image cache TTL (seconds)
-fastly service-dictionary-item create \
-  --service-id=$VCL_SID --dictionary-id=$CFG_DICT_ID \
-  --key=active_backend --value=rust
-
-fastly service-dictionary-item create \
-  --service-id=$VCL_SID --dictionary-id=$CFG_DICT_ID \
-  --key=image_ttl --value=31536000
-```
-
-**Add VCL snippets** — these control request routing and image signing.
-
-```bash
-# Snippet 1: Pass /admin/* directly to Compute, bypass cache
-fastly vcl snippet create \
-  --service-id=$VCL_SID --version=latest --autoclone \
-  --name=admin-pass --type=recv --priority=50 \
-  --content='if (req.url.path ~ "^/admin") { set req.backend = F_edge_cms_compute; return(pass); }'
-
-# Snippet 2: Route /images/* to Object Storage backend
-fastly vcl snippet create \
-  --service-id=$VCL_SID --version=latest --autoclone \
-  --name=images-route --type=recv --priority=100 \
-  --content='if (req.url.path ~ "^/images/") { set req.backend = F_edge_cms_fos; set req.http.X-Fastly-Imageopto-Api = "fastly"; }'
-
-# Snippet 3: Sign image requests with AWS SigV4 on cache miss
-# This snippet is long — write it to a file first
-cat > /tmp/images-sign.vcl << 'ENDVCL'
-if (req.backend == F_edge_cms_fos) {
-  set bereq.url = regsuball(bereq.url.path, "^/images/", "/edge-cms-images/");
-
-  declare local var.access_key STRING;
-  declare local var.secret_key STRING;
-  declare local var.datetime   STRING;
-  declare local var.date       STRING;
-  declare local var.region     STRING;
-  declare local var.host       STRING;
-  declare local var.body_hash  STRING;
-
-  set var.access_key = table.lookup(edge_cms_fos_creds, "access_key_id");
-  set var.secret_key = table.lookup(edge_cms_fos_creds, "secret_key");
-  set var.region     = "us-east-1";
-  set var.host       = "us-east-1.object.fastlystorage.app";
-  set var.datetime   = strftime({"%Y%m%dT%H%M%SZ"}, now);
-  set var.date       = strftime({"%Y%m%d"}, now);
-  set var.body_hash  = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; # pragma: allowlist secret
-
-  set bereq.http.Host                 = var.host;
-  set bereq.http.x-amz-date          = var.datetime;
-  set bereq.http.x-amz-content-sha256 = var.body_hash;
-  unset bereq.http.Authorization;
-
-  declare local var.canonical_headers STRING;
-  set var.canonical_headers =
-    "host:" + var.host + LF +
-    "x-amz-content-sha256:" + var.body_hash + LF +
-    "x-amz-date:" + var.datetime + LF;
-
-  declare local var.signed_headers STRING;
-  set var.signed_headers = "host;x-amz-content-sha256;x-amz-date";
-
-  declare local var.credential_scope STRING;
-  set var.credential_scope = var.date + "/" + var.region + "/s3/aws4_request";
-
-  declare local var.canonical_request STRING;
-  set var.canonical_request =
-    "GET" + LF +
-    bereq.url + LF +
-    "" + LF +
-    var.canonical_headers + LF +
-    var.signed_headers + LF +
-    var.body_hash;
-
-  declare local var.string_to_sign STRING;
-  set var.string_to_sign =
-    "AWS4-HMAC-SHA256" + LF +
-    var.datetime + LF +
-    var.credential_scope + LF +
-    digest.hash_sha256(var.canonical_request);
-
-  declare local var.signature STRING;
-  set var.signature = digest.awsv4_hmac(
-    var.secret_key, var.date, var.region, "s3", var.string_to_sign
-  );
-
-  set bereq.http.Authorization =
-    "AWS4-HMAC-SHA256 Credential=" + var.access_key + "/" + var.credential_scope +
-    ", SignedHeaders=" + var.signed_headers +
-    ", Signature=" + var.signature;
-}
-ENDVCL
-
-fastly vcl snippet create \
-  --service-id=$VCL_SID --version=latest --autoclone \
-  --name=images-sign --type=miss --priority=100 \
-  --content="$(cat /tmp/images-sign.vcl)"
-
-# Snippet 4: Strip internal AWS headers from image responses
-fastly vcl snippet create \
-  --service-id=$VCL_SID --version=latest --autoclone \
-  --name=images-deliver --type=deliver --priority=100 \
-  --content='unset resp.http.X-Amz-Request-Id; unset resp.http.X-Amz-Id-2; unset resp.http.X-Amz-Version-Id;'
-```
-
-> **Note:** The rate limiter cannot be created via the Fastly CLI. Use the Fastly web UI under **Security → Rate Limiting** on the VCL service, or use the Terraform path which automates this.
-
-**Enable Image Optimizer:**
-
-```bash
-fastly products enable --service-id=$VCL_SID --product-id=image_optimizer
-```
-
-**Activate the VCL service:**
-
-```bash
-fastly service-version activate --service-id=$VCL_SID --version=latest
-```
-
-**Update the Compute service** with the VCL service ID in the Secret Store (go back to Step 7, `purge_service_id`):
-
-```bash
-echo -n "$VCL_SID" | fastly secret-store-entry create \
-  --store-id=$SSID --name=purge_service_id --stdin --recreate-allow
-```
-
-### Step 9 — Seed the KV Store
-
-Initialize the content KV store with empty index and sidebar structures:
-
-```bash
-export KVID=<your-content-kv-store-id>
-
-fastly kv-store-entry create \
-  --store-id=$KVID \
-  --key=_index \
-  --value='{"posts":[]}'
-
-fastly kv-store-entry create \
-  --store-id=$KVID \
-  --key=_sidebar \
-  --value='{"items":[]}'
-```
-
-### Step 10 — Configure DNS
-
-Add two CNAME records in your DNS provider:
-
-| Name | Type | Value |
-|------|------|-------|
-| `your-domain.com` | CNAME | `j.sni.global.fastly.net` |
-| `app.your-domain.com` | CNAME | `j.sni.global.fastly.net` |
-
-### Step 11 — Provision TLS
-
-```bash
-# Provision Let's Encrypt certificates for both domains
-fastly tls-subscription create \
-  --domain=your-domain.com \
-  --cert-authority=lets-encrypt
-
-fastly tls-subscription create \
-  --domain=app.your-domain.com \
-  --cert-authority=lets-encrypt
-
-# Check for DNS validation CNAME records to add
-fastly tls-subscription list
-```
-
-Each subscription will show one or more `_acme-challenge.*` CNAME records. Add these to your DNS provider — Fastly validates them to issue the certificate. Certificates are usually issued within a few minutes.
-
-### Step 12 — First login
-
-Visit `https://your-domain.com/admin/login` and sign in with the admin password you set in Step 7.
-
----
-
-## Installation: Terraform
-
-The Terraform configuration automates the full infrastructure — VCL CDN service (with all snippets, rate limiter, dictionaries), Compute service, KV Store, Secret Store, and Object Storage access keys. Secrets and the Object Storage bucket still require a few manual steps after `terraform apply`.
-
-### Step 1 — Build the Compute package
-
-```bash
-cd edge-cms/rust/
-fastly compute build
-```
-
-This produces `rust/pkg/edge-cms.tar.gz`, which Terraform uploads on apply.
-
-### Step 2 — Configure Terraform variables
-
-```bash
-cd edge-cms/terraform/
+cd terraform/
 cp terraform.tfvars.example terraform.tfvars
+export FASTLY_API_KEY=<your-fastly-api-token>   # provider auth; not a Terraform variable
 ```
 
-Export the Fastly API token for the provider (it is not a Terraform variable, so it never lands in `terraform.tfvars` or state inputs):
-
-```bash
-export FASTLY_API_KEY=<your-fastly-api-token>
-```
-
-Edit `terraform.tfvars`:
+Edit `terraform.tfvars` (gitignored — never commit it):
 
 ```hcl
 domain               = "your-domain.com"
@@ -563,178 +141,342 @@ fos_region           = "us-east-1"
 fos_bucket           = "edge-cms-images"
 shield_pop           = "iad-va-us"
 
-# Optional: enable HTTPS log streaming
+# Optional: HTTPS log drain (Compute app; VCL too if enable_vcl_logging = true)
 # logging_endpoint_url = "https://your-log-drain.example.com/logs"
 # logging_token        = "your-logging-auth-token"
+# enable_vcl_logging   = true
 ```
-
-`terraform.tfvars` is gitignored — never commit it.
-
-**Variable reference:**
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `domain` | Yes | — | Public domain (e.g. `edge-cms.example.com`) |
-| `compute_package_path` | No | `../rust/pkg/edge-cms.tar.gz` | Path to the built Compute package |
+| `compute_package_path` | No | `../rust/pkg/edge-cms.tar.gz` | Built Rust Compute package |
 | `fos_region` | No | `us-east-1` | Object Storage region |
 | `fos_bucket` | No | `edge-cms-images` | Object Storage bucket name |
-| `shield_pop` | No | `iad-va-us` | POP for origin shielding — pick one near your origin or users |
-| `logging_endpoint_url` | No | `""` | HTTPS log drain URL; leave empty to disable |
-| `logging_token` | No | `""` | Bearer token for the log drain |
+| `shield_pop` | No | `iad-va-us` | Shield POP for the Compute and Object Storage backends |
+| `go_backend_host` | No | `""` | Hostname of a Go Compute service; empty = no Go backend on the VCL service |
+| `ts_backend_host` | No | `""` | Hostname of a TypeScript Compute service; empty = no TS backend |
+| `logging_endpoint_url` | No | `""` | HTTPS log drain URL; empty disables logging |
+| `enable_vcl_logging` | No | `false` | Also log VCL requests (truncated IP, path only) |
+| `logging_token` | No | `""` | Bearer token for the log drain (sensitive) |
 
-**Shield POP selection:** pick a POP geographically close to your primary user base. Find POP codes at `fastly pop list` or the [Fastly POP reference](https://developer.fastly.com/reference/api/utils/pops/).
+`terraform.tfstate` contains secrets (the generated origin auth token and Object Storage keys). Configure an encrypted remote backend before you apply (see `terraform/providers.tf`).
 
 ### Step 3 — Apply
 
 ```bash
-cd edge-cms/terraform/
 terraform init
 terraform plan -out=tfplan
 terraform apply tfplan
 ```
 
-Terraform creates:
-- VCL CDN service with backends, dictionaries, VCL snippets, rate limiter, compression, and Image Optimizer
-- Compute service with KV Store, Secret Store, and Config Store resource links, and backends for the Fastly API and Object Storage
-- KV Store (`edge-cms-content`)
-- Config Store (`edge-cms-cache-config`) — pre-populated with cache TTLs (`page_ttl`, `asset_ttl`, `image_ttl`)
-- Secret Store (`edge-cms-secrets`) — created empty; populate in the next step
-- Edge Dictionary (`edge_cms_config`) — pre-populated with `active_backend` and `image_ttl`
-- Object Storage access key pair
+Terraform creates the VCL service (snippets, dictionaries `edge_cms_fos_creds`, `edge_cms_private`, `edge_cms_config`, compression, Image Optimizer), the Compute service, the content KV store (`edge-cms-content`, delete-protected), the Config Store (`edge-cms-cache-config`: `site_url`, `page_ttl`, `asset_ttl`, `image_ttl`, `page_size`), an empty Secret Store (`edge-cms-secrets`), the generated origin auth token, and two Object Storage access keys.
 
-After apply, note the outputs — you'll need them for the next steps:
+> If activation of the VCL service fails on `ratecounter`/`penaltybox`, Edge Rate Limiting is not enabled for the service yet. Enable it (Step 4) and re-run `terraform apply`.
+
+The Compute service now answers `403` to everything until the origin auth token is in place (Step 5). Nothing is live yet on a new deployment, so this is expected.
 
 ```bash
-terraform output
+terraform output next_steps     # the checklist below with your IDs filled in
 ```
 
-### Step 4 — Populate the Secret Store
+### Step 4 — Enable Edge Rate Limiting on the VCL service
 
-The Secret Store is created empty by Terraform (secrets cannot be stored in Terraform state).
-Use the IDs from `terraform output` to populate all 8 required keys:
+The VCL login limiter (`ratecounter`/`penaltybox`) requires the product on the service.
+
+```bash
+fastly products --service-id=$(terraform output -raw vcl_service_id)    # list products and status
+# enable the Edge Rate Limiting entry: Fastly UI, or `fastly products --enable=<id> --service-id=...`
+```
+
+The Compute app also uses ERL (`login_attempts`, `login_penalty`). `terraform/outputs.tf` only documents enabling the product on the VCL service; if login rate limiting misbehaves, check the Compute logs for `erl ... failed` warnings (the app fails open and logs them).
+
+### Step 5 — Populate the Secret Store
+
+Secret values never go on a command line or through `echo`: they are piped from `terraform output` or a generator, or typed into `read -rs`. Commands match `terraform output next_steps`.
 
 ```bash
 export SSID=$(terraform output -raw secret_store_id)
-export VCL_SID=$(terraform output -raw vcl_service_id)
-export FOS_AKI=$(terraform output -raw fos_access_key_id)
-export FOS_SK=$(terraform output -raw fos_secret_key)
 
-# 1. Admin password — bcrypt hash
-BCRYPT=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'YOUR_ADMIN_PASSWORD', bcrypt.gensalt()).decode())")
-echo -n "$BCRYPT" | fastly secret-store-entry create \
-  --store-id=$SSID --name=admin_password --stdin --recreate-allow
+# Origin auth token (Terraform-generated)
+terraform output -raw origin_auth_token \
+  | fastly secret-store-entry create --store-id=$SSID --name=origin_auth_token --stdin --recreate-allow
 
-# 2. Session HMAC signing key
-echo -n "$(openssl rand -base64 32)" | fastly secret-store-entry create \
-  --store-id=$SSID --name=hmac_key --stdin --recreate-allow
+# Admin password — bcrypt hash; password read from the TTY
+python3 -c 'import bcrypt,getpass,sys; sys.stdout.write(bcrypt.hashpw(getpass.getpass("Admin password: ").encode(), bcrypt.gensalt()).decode())' \
+  | fastly secret-store-entry create --store-id=$SSID --name=admin_password --stdin --recreate-allow
 
-# 3. Fastly API token with purge scope on the VCL service
-#    Create at: https://manage.fastly.com/account/personal/tokens
-echo -n 'YOUR_PURGE_API_TOKEN' | fastly secret-store-entry create \
-  --store-id=$SSID --name=fastly_api_token --stdin --recreate-allow
+# Session HMAC key
+openssl rand -base64 32 | tr -d '\n' \
+  | fastly secret-store-entry create --store-id=$SSID --name=hmac_key --stdin --recreate-allow
 
-# 4. VCL CDN service ID (from terraform output)
-echo -n "$VCL_SID" | fastly secret-store-entry create \
-  --store-id=$SSID --name=purge_service_id --stdin --recreate-allow
+# Fastly API token with purge scope on the VCL service
+IFS= read -rs PURGE_TOKEN; printf '%s' "$PURGE_TOKEN" \
+  | fastly secret-store-entry create --store-id=$SSID --name=fastly_api_token --stdin --recreate-allow
+unset PURGE_TOKEN
 
-# 5. Object Storage credentials (from terraform output)
-echo -n "$FOS_AKI" | fastly secret-store-entry create \
-  --store-id=$SSID --name=fos_access_key_id --stdin --recreate-allow
+# Object Storage read-write-objects key (uploads)
+terraform output -raw fos_readwrite_access_key_id \
+  | fastly secret-store-entry create --store-id=$SSID --name=fos_access_key_id --stdin --recreate-allow
+terraform output -raw fos_readwrite_secret_key \
+  | fastly secret-store-entry create --store-id=$SSID --name=fos_secret_key --stdin --recreate-allow
 
-echo -n "$FOS_SK" | fastly secret-store-entry create \
-  --store-id=$SSID --name=fos_secret_key --stdin --recreate-allow
-
-# 6. Object Storage region and bucket (must match terraform.tfvars)
-echo -n 'us-east-1' | fastly secret-store-entry create \
-  --store-id=$SSID --name=fos_region --stdin --recreate-allow
-
-echo -n 'edge-cms-images' | fastly secret-store-entry create \
-  --store-id=$SSID --name=fos_bucket --stdin --recreate-allow
+# Non-secret settings (Compute reads them from the Secret Store)
+terraform output -raw vcl_service_id \
+  | fastly secret-store-entry create --store-id=$SSID --name=purge_service_id --stdin --recreate-allow
+printf '%s' "us-east-1"       | fastly secret-store-entry create --store-id=$SSID --name=fos_region --stdin --recreate-allow
+printf '%s' "edge-cms-images" | fastly secret-store-entry create --store-id=$SSID --name=fos_bucket --stdin --recreate-allow
 ```
 
-> **Why not Terraform for secrets?** Terraform stores state in plaintext. Putting secrets in `terraform.tfstate` would expose them to anyone with state access. The Secret Store is provisioned as an empty container; secrets are populated out-of-band via the CLI.
+`fos_region` and `fos_bucket` must match `terraform.tfvars`.
 
-### Step 5 — Create the Object Storage bucket
+| Key | Description | Source |
+|-----|-------------|--------|
+| `origin_auth_token` | Shared secret VCL → Compute (must equal the `edge_cms_private` item) | `terraform output -raw origin_auth_token` |
+| `admin_password` | bcrypt hash of the admin password | Python `bcrypt` |
+| `hmac_key` | Session token signing key | `openssl rand -base64 32` |
+| `fastly_api_token` | Token with purge scope on the VCL service | Fastly account → API tokens |
+| `purge_service_id` | VCL CDN service ID | `terraform output vcl_service_id` |
+| `fos_access_key_id` | Object Storage **read-write** key ID | `terraform output fos_readwrite_access_key_id` |
+| `fos_secret_key` | Object Storage **read-write** secret | `terraform output fos_readwrite_secret_key` |
+| `fos_region` | Object Storage region | e.g. `us-east-1` |
+| `fos_bucket` | Object Storage bucket name | e.g. `edge-cms-images` |
 
-Terraform creates the access key pair but not the bucket itself (the bucket needs the credentials that don't exist until after apply). Use the credentials from `terraform output`:
+> **Why not Terraform for these?** The provider has no Secret Store entry resource, and values in Terraform state are readable by anyone with state access.
+
+### Step 6 — Populate the private VCL dictionaries
+
+Terraform cannot manage items in private (write-only) dictionaries. `dictionary-entry update --file` takes a batch JSON file; process substitution keeps the values off the command line.
 
 ```bash
-export AWS_ACCESS_KEY_ID=$(terraform output -raw fos_access_key_id)
-export AWS_SECRET_ACCESS_KEY=$(terraform output -raw fos_secret_key)
+export VCL_SID=$(terraform output -raw vcl_service_id)
 
+# edge_cms_private — origin auth token (same value as the secret above)
+fastly service dictionary-entry update --service-id=$VCL_SID \
+  --dictionary-id="$(terraform output -raw private_dict_id)" \
+  --file=<(terraform output -raw origin_auth_token \
+    | jq -Rs '{items: [{op: "upsert", item_key: "origin_auth_token", item_value: .}]}')
+
+# edge_cms_fos_creds — Object Storage READ-ONLY key (SigV4 signing in VCL)
+fastly service dictionary-entry update --service-id=$VCL_SID \
+  --dictionary-id="$(terraform output -raw fos_dict_id)" \
+  --file=<(jq -n --arg id "$(terraform output -raw fos_readonly_access_key_id)" \
+                 --rawfile sk <(terraform output -raw fos_readonly_secret_key) \
+    '{items: [{op: "upsert", item_key: "access_key_id", item_value: $id},
+              {op: "upsert", item_key: "secret_key",    item_value: $sk}]}')
+```
+
+### Step 7 — Create the Object Storage bucket (once)
+
+Neither Terraform-managed key can create buckets, so mint a temporary admin key and delete it straight afterwards:
+
+```bash
+fastly object-storage access-keys create --description="edge-cms bucket bootstrap (delete me)" \
+  --permission=read-write-admin
+IFS= read -r  AWS_ACCESS_KEY_ID;     export AWS_ACCESS_KEY_ID      # paste the key ID
+IFS= read -rs AWS_SECRET_ACCESS_KEY; export AWS_SECRET_ACCESS_KEY  # paste the secret (hidden)
 aws s3 mb s3://edge-cms-images \
   --endpoint-url https://us-east-1.object.fastlystorage.app \
   --region us-east-1
+fastly object-storage access-keys delete --ak-id="$AWS_ACCESS_KEY_ID"
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 ```
 
-Replace `edge-cms-images`, `us-east-1`, and the endpoint region to match your `terraform.tfvars`.
+Use your own bucket name and region from `terraform.tfvars`.
 
-### Step 6 — Populate the VCL dictionary
-
-The private `edge_cms_fos_creds` dictionary holds Object Storage credentials for SigV4 signing in VCL. Populate it after apply:
+### Step 8 — Seed the KV store
 
 ```bash
-export VCL_SID=$(terraform output -raw vcl_service_id)
-export DICT_ID=$(terraform output -raw fos_dict_id)
-export FOS_AKI=$(terraform output -raw fos_access_key_id)
-export FOS_SK=$(terraform output -raw fos_secret_key)
-
-fastly service-dictionary-item create \
-  --service-id=$VCL_SID --dictionary-id=$DICT_ID \
-  --key=access_key_id --value="$FOS_AKI"
-
-fastly service-dictionary-item create \
-  --service-id=$VCL_SID --dictionary-id=$DICT_ID \
-  --key=secret_key --value="$FOS_SK"
+KVID=$(terraform output -raw content_kv_store_id)
+fastly kv-store-entry create --store-id=$KVID --key=_index   --value='{"posts":[]}'
+fastly kv-store-entry create --store-id=$KVID --key=_sidebar --value='{"items":[]}'
 ```
 
-### Step 7 — Seed the KV Store
+### Step 9 — DNS and TLS
+
+DNS uses explicit records — no wildcard CNAME. Print the exact list:
 
 ```bash
-export KVID=$(terraform output -raw content_kv_store_id)
-
-fastly kv-store-entry create \
-  --store-id=$KVID --key=_index --value='{"posts":[]}'
-
-fastly kv-store-entry create \
-  --store-id=$KVID --key=_sidebar --value='{"items":[]}'
+terraform output dns_routing_records
 ```
-
-### Step 8 — Configure DNS
-
-Add two CNAME records in your DNS provider:
 
 | Name | Type | Value |
 |------|------|-------|
 | `your-domain.com` | CNAME | `j.sni.global.fastly.net` |
 | `app.your-domain.com` | CNAME | `j.sni.global.fastly.net` |
+| plus `go_backend_host` / `ts_backend_host`, if set | CNAME | `j.sni.global.fastly.net` |
+
+A CNAME is not allowed at a zone apex: use your provider's ALIAS/ANAME or Fastly's documented apex A records.
+
+TLS: one wildcard Let's Encrypt subscription covers the domain and `*.your-domain.com` (the wildcard is only on the certificate). The automation account may lack TLS permissions, so run this with your main account token:
 
 ```bash
-# Confirm the expected records
-terraform output squarespace_dns_routing_cnames
+terraform output tls_provisioning_commands     # prints the commands; run them with the main account token
+fastly tls-subscription list                   # shows the _acme-challenge CNAMEs to add
 ```
 
-### Step 9 — Provision TLS
+Certificates issue within a few minutes of the validation records resolving.
+
+### Step 10 — Smoke test and first login
 
 ```bash
-# Provision Let's Encrypt for both domains
-fastly tls-subscription create \
-  --domain=your-domain.com --cert-authority=lets-encrypt
-
-fastly tls-subscription create \
-  --domain=app.your-domain.com --cert-authority=lets-encrypt
-
-# List validation records — add these CNAME records in your DNS provider
-fastly tls-subscription list
+curl -sI  https://your-domain.com/            # 200, strict-transport-security, content-security-policy
+curl -sI  http://your-domain.com/             # 301 to https://
+curl -s -o /dev/null -w '%{http_code}\n' https://app.your-domain.com/   # 403 (no origin auth header)
 ```
 
-Certificates are issued once Fastly verifies the `_acme-challenge.*` DNS records. This usually takes 1–5 minutes after the DNS change propagates.
+Then visit `https://your-domain.com/admin/login` and sign in with the admin password from Step 5.
 
-### Step 10 — First login
+---
 
-Visit `https://your-domain.com/admin/login` and sign in with the admin password you set in Step 4.
+## Upgrading an existing deployment
 
-> **Note:** The Config Store and `edge_cms_config` dictionary are fully managed by Terraform. To change cache TTLs, update the values in `stores.tf` and `vcl.tf` and run `terraform apply`, or update them live via the CLI (see "Changing TTLs Live" in the Caching Strategy section).
+For a deployment that predates the security hardening (single Object Storage admin key, managed rate limiter, no origin auth). **Run it in this order.** It is designed so that no step makes the live site return `403`.
+
+Why the order matters: the new Compute package returns `403` to any request without a valid `Edge-CMS-Origin-Auth` header, so the token must be in the Secret Store **and** in the VCL dictionary before the new Compute package goes live. The old Compute package ignores the header, so the new VCL service can safely go live first. The `edge_cms_private` dictionary only exists once the new VCL version is applied, which is why the apply is split in two.
+
+Rolling out Compute before the secrets are written takes the whole site (public and admin) to `403` until they are; rolling it out with the secret written but the dictionary empty has the same effect, because VCL then sends no token.
+
+All Terraform commands run in `terraform/` with `FASTLY_API_KEY` exported. Do not paste secrets into the shell history; use the `terraform output -raw … |` patterns below.
+
+**0. Back up content** (see [Backup and restore](#backup-and-restore)):
+
+```bash
+FASTLY_KV_STORE_ID=$(terraform output -raw content_kv_store_id) \
+FASTLY_API_TOKEN=$FASTLY_API_KEY ../scripts/kv-backup.sh
+```
+
+Note the currently active service versions for rollback:
+
+```bash
+fastly service-version list --service-id=$(terraform output -raw vcl_service_id)
+fastly service-version list --service-id=$(terraform output -raw compute_service_id)
+```
+
+**1. Build the Rust package** (`../rust/pkg/edge-cms.tar.gz`):
+
+```bash
+(cd ../rust && fastly compute build)
+```
+
+**2. Initialise Terraform** (adds the `hashicorp/random` provider from the committed lock file):
+
+```bash
+terraform init
+```
+
+**3. Create the new keys and token only:**
+
+```bash
+terraform apply \
+  -target=fastly_object_storage_access_keys.fos_readonly \
+  -target=fastly_object_storage_access_keys.fos_readwrite \
+  -target=random_password.origin_auth_token
+```
+
+Sanity-check that the token is readable without printing it: `terraform output -raw origin_auth_token | wc -c` must print `48`. (The old `fastly_object_storage_access_keys.fos` admin key is untouched until step 8.)
+
+**4. Write the Compute-side secrets** (old Compute ignores them; the old code simply starts uploading with the new read-write key):
+
+```bash
+SSID=$(terraform output -raw secret_store_id)
+terraform output -raw origin_auth_token \
+  | fastly secret-store-entry create --store-id=$SSID --name=origin_auth_token --stdin --recreate-allow
+terraform output -raw fos_readwrite_access_key_id \
+  | fastly secret-store-entry create --store-id=$SSID --name=fos_access_key_id --stdin --recreate-allow
+terraform output -raw fos_readwrite_secret_key \
+  | fastly secret-store-entry create --store-id=$SSID --name=fos_secret_key --stdin --recreate-allow
+```
+
+**5. Enable Edge Rate Limiting on the VCL service** (the new VCL declares a `ratecounter` and `penaltybox` and will not activate without it):
+
+```bash
+VCL_SID=$(terraform output -raw vcl_service_id)
+fastly products --service-id=$VCL_SID    # find the Edge Rate Limiting entry, then enable it
+# fastly products --enable=<id> --service-id=$VCL_SID    (or use the Fastly UI)
+```
+
+**6. Review and apply the VCL service only.** This creates the `edge_cms_private` dictionary and activates the hardened VCL (force-TLS, HSTS, image hardening). It sends an empty origin auth header for now, which the old Compute ignores.
+
+```bash
+terraform plan -target=fastly_service_vcl.cdn -target=fastly_service_dictionary_items.config
+terraform apply -target=fastly_service_vcl.cdn -target=fastly_service_dictionary_items.config
+```
+
+Expect: `edge_cms_rate_limit_uris` dictionary and the old `rate_limiter` removed; new `edge_cms_private` dictionary and the new snippets added; Go/TS VCL backends removed unless `go_backend_host`/`ts_backend_host` are set.
+
+**7. Write the VCL dictionaries** (same commands as new-deployment Step 6):
+
+```bash
+fastly service dictionary-entry update --service-id=$VCL_SID \
+  --dictionary-id="$(terraform output -raw private_dict_id)" \
+  --file=<(terraform output -raw origin_auth_token \
+    | jq -Rs '{items: [{op: "upsert", item_key: "origin_auth_token", item_value: .}]}')
+
+fastly service dictionary-entry update --service-id=$VCL_SID \
+  --dictionary-id="$(terraform output -raw fos_dict_id)" \
+  --file=<(jq -n --arg id "$(terraform output -raw fos_readonly_access_key_id)" \
+                 --rawfile sk <(terraform output -raw fos_readonly_secret_key) \
+    '{items: [{op: "upsert", item_key: "access_key_id", item_value: $id},
+              {op: "upsert", item_key: "secret_key",    item_value: $sk}]}')
+```
+
+Images now flow through the read-only key. Quick check: an existing `https://your-domain.com/images/<slug>/<file>` still returns `200`.
+
+**8. Full plan — read it before applying:**
+
+```bash
+terraform plan -out=tfplan
+```
+
+Expected: the old `fastly_object_storage_access_keys.fos` admin key **destroyed**; the Compute service updated in place with the new package; Config Store entries updated in place (`page_ttl` 2592000 → 86400, plus new `site_url` and `page_size`). Any remaining Go/TS backend or rate-limiter removals that step 6 did not already cover. **There must be no replacement (`-/+`) of the content KV store, Secret Store, Config Store or dictionaries.** If you see one, stop.
+
+```bash
+terraform apply tfplan
+```
+
+This deploys the new Compute package, which starts enforcing origin auth. Existing admin sessions become invalid (the new `v1` tokens are required); everyone logs in again.
+
+If you run Go or TypeScript Compute services (managed outside Terraform), rebuild and redeploy them with their security-fixed packages too; they read the same Secret Store, so no extra secrets are needed.
+
+**9. Smoke tests:**
+
+```bash
+curl -sI  https://your-domain.com/            # 200 + strict-transport-security + content-security-policy
+curl -sI  http://your-domain.com/             # 301 to https
+curl -s -o /dev/null -w '%{http_code}\n' https://app.your-domain.com/   # 403: direct access refused
+```
+
+Then log in at `https://your-domain.com/admin/login`, create and delete a draft post, and upload a small image.
+
+**10. Rollback.** Activate the previous version of both services (the version numbers noted in step 0):
+
+```bash
+fastly service-version activate --version=<prev-vcl>     --service-id=<vcl-service-id>
+fastly service-version activate --version=<prev-compute> --service-id=<compute-service-id>
+```
+
+The KV store is not versioned and is never modified by this runbook (new `rev:`/`trash:`/`session-revoked:` keys are ignored by old code). Config Store and dictionary item values are also unversioned; old code tolerates the new values. Old Compute needs a working Object Storage key: if step 8 already destroyed the old admin key, uploads keep working with the new read-write key written in step 4. After a rollback, Terraform state no longer matches the active versions; re-run `terraform plan` before the next apply. If you still hold a KV backup from step 0 and content looks wrong, see `scripts/kv-restore.sh`.
+
+---
+
+## Backup and restore
+
+`scripts/kv-backup.sh` exports every key of the content KV store (including `rev:` and `trash:` keys) to a timestamped JSON-lines file (`{"key","value"}` with base64 values); `scripts/kv-restore.sh` replays it.
+
+```bash
+cp scripts/.env.example scripts/.env     # then fill in; scripts/.env is gitignored
+#   FASTLY_API_TOKEN=...
+#   FASTLY_KV_STORE_ID=...               # terraform output -raw content_kv_store_id
+
+scripts/kv-backup.sh                      # writes ./kv-backups/kv-backup-<store>-<UTC timestamp>.jsonl (mode 600)
+scripts/kv-backup.sh /path/to/dir         # different output directory
+
+scripts/kv-restore.sh kv-backups/kv-backup-<store>-<ts>.jsonl   # asks you to type the store id to confirm
+scripts/kv-restore.sh --yes <file>                              # non-interactive
+```
+
+Needs the `fastly` CLI and `jq`. Restore **overwrites** keys with the same name and leaves keys that are not in the backup alone. Backups contain all post content: `kv-backups/` is gitignored; keep them out of the repo and treat them as sensitive. Backups do not include the Secret Store, Config Store or dictionaries (those are rebuilt from Terraform and the post-apply steps).
 
 ---
 
@@ -742,66 +484,98 @@ Visit `https://your-domain.com/admin/login` and sign in with the admin password 
 
 | File | Tracked | Purpose |
 |------|---------|---------|
-| `rust/.env.example` | Yes | Template — copy to `.env` for local dev |
-| `rust/.env` | **No** (gitignored) | Local API token and service ID |
+| `rust/.env.example`, `scripts/.env.example` | Yes | Templates — copy to `.env` |
+| `rust/.env`, `scripts/.env` | **No** (gitignored) | API token, service and store IDs |
 | `terraform/terraform.tfvars.example` | Yes | Template — copy to `terraform.tfvars` |
-| `terraform/terraform.tfvars` | **No** (gitignored) | Fastly API token and deployment config |
-| `terraform/terraform.tfstate` | **No** (gitignored) | Terraform state — contains FOS access key ID |
-| `rust/tests/secrets.json` | Yes | **Test-only** bcrypt hash and HMAC key — not real credentials |
+| `terraform/terraform.tfvars` | **No** (gitignored) | Deployment config (and log token if set) |
+| `terraform/terraform.tfstate` | **No** (gitignored) | **Contains secrets**: origin auth token, Object Storage keys. Use an encrypted remote backend |
+| `terraform/.terraform.lock.hcl` | Yes | Provider version/hash lock |
+| `*/tests/secrets.json` | Yes | **Test-only** admin bcrypt hash, HMAC key and origin auth token — not real credentials |
+| `.secrets.baseline` | Yes | detect-secrets baseline; the test fixtures above are allowed through it |
 
-The `tests/secrets.json` file contains placeholder credentials for local development only. The bcrypt hash corresponds to the password `testpassword` and the HMAC key is a fixed base64 string. These are safe to commit because they are never used in production — the Secret Store is always used in deployed environments.
+`tests/secrets.json` exists for local development and the integration suite only. The bcrypt hash is for the password `admin`, the HMAC key is a fixed string and `origin_auth_token` is `local-dev-origin-auth`. They are safe to commit because deployed environments always use the Secret Store.
 
 ---
 
 ## Local Development
 
-Run locally with Viceroy (Fastly's local Compute runtime):
+Run locally with Viceroy (Fastly's local Compute runtime). Each backend directory (`rust/`, `typescript/`, `go/`) has a `fastly.toml` that wires local KV, Config and Secret stores to fixture files under `tests/` — no Fastly account required.
 
 ```bash
-cd edge-cms/rust/
-fastly compute serve
+cd rust/
+fastly compute serve         # http://127.0.0.1:7676
 ```
 
-This starts a local server at `http://127.0.0.1:7676` with test data pre-loaded from the fixture files in `tests/`. The `fastly.toml` configures local KV and Secret stores to use these files — no Fastly account required for local development.
+**Every local request must carry `Edge-CMS-Origin-Auth: local-dev-origin-auth`.** In production the VCL service injects that header; Compute refuses (`403`) anything that did not come through it. Locally there is no VCL service, so you add it yourself. The value is the `origin_auth_token` in `tests/secrets.json`.
 
-**Local test fixtures:**
+The admin password fixture is **`admin`**. Mutating `/admin` requests also need a same-origin signal for CSRF: `Origin: http://127.0.0.1:7676` (equal to `site_url` in `tests/cache-config.json`).
+
+```bash
+H='Edge-CMS-Origin-Auth: local-dev-origin-auth'
+B=http://127.0.0.1:7676
+
+curl -s -H "$H" $B/                              # reader home page: 200
+curl -s -o /dev/null -w '%{http_code}\n' $B/     # no header: 403
+
+# Log in (CSRF: Origin must equal site_url). The cookie is Secure, so pass it by hand over http.
+curl -si -X POST $B/admin/login -H "$H" -H "Origin: $B" --data-urlencode 'password=admin' \
+  | grep -i '^set-cookie'
+# → set-cookie: session=v1....; HttpOnly; Secure; SameSite=Strict; Path=/admin; Max-Age=3600
+
+SESSION=<value after "session=" up to the first ;>
+curl -s -H "$H" -H "Cookie: session=$SESSION" $B/admin           # dashboard: 200
+
+# Mutating request, JSON API style
+curl -s -X PUT $B/admin/sidebar -H "$H" -H "Origin: $B" -H "Cookie: session=$SESSION" \
+  -H 'Content-Type: application/json' -d '{"items":[]}'
+```
+
+The login limit is 5 per 60 s per IP (Viceroy may stub ERL); don't hammer login in a loop.
 
 | File | Contents |
 |------|---------|
 | `tests/kv-content.json` | Sample post, index, and sidebar config |
-| `tests/kv-images.json` | Empty image store placeholder |
-| `tests/cache-config.json` | Cache TTLs for local dev (matches production Config Store) |
-| `tests/secrets.json` | Test admin password hash and HMAC key |
+| `tests/cache-config.json` | `site_url` (`http://127.0.0.1:7676`), TTLs, `page_size` |
+| `tests/secrets.json` | Test admin password hash (`admin`), HMAC key, origin auth token |
 
-### Integration Tests
+There is no local images store: `/images/*` is served by the VCL service from Object Storage, and Compute returns `404` for it.
 
-With Viceroy running, execute the integration test script:
+### Tests
 
 ```bash
-./tests/integration.sh
+# Unit tests
+(cd rust       && cargo test)
+(cd go         && make test)                 # copies ../shared first
+(cd typescript && npm ci && npm test -- --coverage)
+
+# Integration suite, one backend at a time (build it first; starts Viceroy, runs the suite, stops it)
+(cd rust && fastly compute build)       && scripts/run-integration.sh rust
+(cd go && make build)                   && scripts/run-integration.sh go
+(cd typescript && npm ci && fastly compute build) && scripts/run-integration.sh typescript
 ```
 
-This exercises all reader routes, cache headers, JSON-LD structured data, and admin auth redirects.
+The same suite (`rust/tests/integration.sh`, encoding `docs/architecture/security-hardening-contract.md`) runs against all three backends. To run it by hand against a server you started, `rust/tests/integration.sh`; overrides are listed at the top of the script (`EDGE_CMS_BASE_URL`, `EDGE_CMS_ORIGIN_AUTH`, `EDGE_CMS_ADMIN_PASSWORD`). It makes at most 5 login requests per run; running it twice within 60 s against a backend with working ERL may hit the login limit.
 
 ---
 
 ## CI / GitHub Actions
 
-Pull requests targeting `main` that touch `edge-cms/**` trigger the `edge-cms CI` workflow (`.github/workflows/edge-cms-ci.yml`). Six jobs run in parallel (except integration tests, which wait for Rust checks):
+`.github/workflows/edge-cms-ci.yml` runs on pull requests to, and pushes to, `main`. A `changes` job filters by path so each language only builds when it (or `shared/`) changed; `dependency-audit` and `detect-secrets` always run.
 
 | Job | What it checks |
 |-----|---------------|
-| **Rust** | `cargo fmt --check`, `cargo clippy --target wasm32-wasip1`, `cargo test` (40 unit tests) |
-| **Go** | `go vet`, `go test` (43 unit tests) |
-| **Terraform** | `terraform fmt -check`, `terraform validate` |
-| **Integration** | Builds Compute package, starts [Viceroy](https://github.com/fastly/Viceroy) via [`fastly/compute-actions/setup`](https://github.com/fastly/compute-actions), runs HTTP integration tests (15 assertions covering reader routes, cache headers, admin auth) |
-| **VCL** | `falco fmt --check`, `falco lint` on any `.vcl` files (skips gracefully when VCL is inline in Terraform) |
-| **Secrets** | `detect-secrets scan` against baseline to prevent accidental credential commits |
-| **Dependency audit** | `npm audit --omit=dev`, `govulncheck`, `cargo audit` — fails the PR on known-vulnerable dependencies. Node jobs use `check-latest` so the newest patched Node 22.x is always used |
+| **Rust** | `cargo fmt --check`, `cargo clippy --target wasm32-wasip1 -D warnings`, `cargo test` |
+| **Go** | `gofmt`, `make test`, `go vet` |
+| **TypeScript** | `tsc --noEmit`, `jest --coverage` (coverage threshold in `jest.config.js`), `webpack` build |
+| **Terraform** | `terraform fmt -check`, `terraform init -backend=false`, `terraform validate` |
+| **VCL** | `scripts/extract-vcl.sh` pulls each inline snippet out of `terraform/vcl.tf`, wraps it in its subroutine, and `falco lint` checks it (falco pinned to a release and verified by SHA-256) |
+| **Integration (Rust, Go, TypeScript)** | Builds each package, starts it under [Viceroy](https://github.com/fastly/Viceroy) via [`fastly/compute-actions/setup`](https://github.com/fastly/compute-actions), runs the shared integration suite with `scripts/run-integration.sh <backend>` |
+| **Dependency audit** | `npm audit --omit=dev`, `govulncheck`, `cargo audit` — fails on known-vulnerable dependencies; Node jobs use `check-latest` |
+| **Secrets** | `detect-secrets-hook` against `.secrets.baseline` — fails the build on any new secret |
 
-The integration test job uses [Fastly's official Compute GitHub Actions](https://github.com/fastly/compute-actions) (`fastly/compute-actions/setup@v6`) to install the Fastly CLI and Viceroy runtime. This builds the Rust Compute package, starts a local Viceroy instance, and runs `tests/integration.sh` — the same test suite used in local development.
+Every third-party action is pinned to a full commit SHA (tag noted in a comment), and Dependabot (`.github/dependabot.yml`) proposes weekly bumps for Actions, npm, cargo and Go modules. Stale CI runs on the same branch are cancelled.
 
-Stale CI runs are automatically cancelled when new commits are pushed to the same PR branch.
+Pre-commit hooks (`.pre-commit-config.yaml`) mirror the fast checks: secret detection, forbidden `.env` files and service-version strings, `terraform fmt`, VCL lint, rustfmt/clippy, gofmt/vet, `tsc`, shellcheck.
 
 ---
 
@@ -809,37 +583,47 @@ Stale CI runs are automatically cancelled when new commits are pushed to the sam
 
 | Store | Type | Key | Value |
 |-------|------|-----|-------|
-| `content` | KV | `_index` | JSON array of post metadata (used for listing pages) |
-| `content` | KV | `_sidebar` | JSON sidebar config (tags + links) |
-| `content` | KV | `post:<slug>` | Full post JSON (title, content, tags, dates, featured image URL) |
-| `images` | FOS bucket | `<slug>/<filename>` | Raw image bytes (written by Compute, served by VCL via FOS) |
-| `cache_config` | Config Store | `page_ttl`, `asset_ttl`, `image_ttl` | Cache TTLs in seconds (read by Compute) |
+| `content` | KV | `_index` | Post metadata for listing pages (rebuildable) |
+| `content` | KV | `_sidebar` | Sidebar config (categories and links) |
+| `content` | KV | `post:<slug>` | Full post JSON |
+| `content` | KV | `rev:<slug>:<unix_ts>` | Previous version of a post, written before each update (30-day TTL) |
+| `content` | KV | `trash:<slug>` | Soft-deleted post, written before delete (30-day TTL) |
+| `content` | KV | `session-revoked:<nonce>` | Revoked session, TTL to the session's expiry |
+| — | Object Storage bucket | `<slug>/<filename>` | Image bytes (written by Compute, served by VCL) |
+| `cache_config` | Config Store | `site_url`, `page_ttl`, `asset_ttl`, `image_ttl`, `page_size` | Site URL (CSRF and canonical URLs), TTLs in seconds, posts per page |
 | `edge_cms_config` | Edge Dictionary | `active_backend`, `image_ttl` | Backend selector + VCL image cache TTL |
-| `secrets` | Secret Store | 8 keys | See secret reference table above |
+| `edge_cms_private` | Private Dictionary | `origin_auth_token` | Token the VCL service sends to Compute |
+| `edge_cms_fos_creds` | Private Dictionary | `access_key_id`, `secret_key` | Object Storage read-only key for VCL SigV4 |
+| `secrets` | Secret Store | 9 keys | See the secrets table above |
+
+**Admin operations that touch this data:** `POST /admin/rebuild-index` rebuilds `_index` from the `post:` keys (use it if the index ever drifts), then purges `post-index`. There is no restore UI for `rev:`/`trash:` entries; recover them with the `fastly kv-store-entry` CLI. If a purge call fails, the admin redirect carries `?purge=failed` and the dashboard shows a warning banner: retry the save, or purge from the Fastly UI.
 
 ---
 
 ## Caching Strategy
 
-All cache TTLs are configurable at runtime — no code deploy required. Compute reads from a **Config Store** (`cache_config`), and VCL image caching reads from the **`edge_cms_config` Edge Dictionary**.
+TTLs are configurable at runtime — no code deploy. Compute reads a **Config Store** (`cache_config`); VCL image caching reads the **`edge_cms_config` Edge Dictionary**. Both are managed by Terraform, so live edits are reverted by the next `terraform apply` unless you also change the Terraform value.
 
 ### TTL Tiers
 
-| Content | Edge + Browser TTL | Source | Surrogate Keys |
-|---------|-------------------|--------|----------------|
-| **Pages** (home, post, tag, feed, sitemap, robots) | 30 days (`2592000`) | Config Store: `page_ttl` | `post-index`, `post-<slug>`, `sidebar` |
-| **CSS/JS** | 1 year (`31536000`) | Config Store: `asset_ttl` | `assets` |
-| **Images** (via VCL → Object Storage) | 1 year (`31536000`) | Edge Dictionary: `image_ttl` | `images` |
-| **Admin** (`/admin/*`) | No cache | `private, no-store` + VCL `return(pass)` | — |
+| Content | Edge TTL | Browser | Source | Surrogate Keys |
+|---------|----------|---------|--------|----------------|
+| **Pages** (home, post, tag) | 1 day (`86400`) + `stale-while-revalidate=60`, `stale-if-error=86400` | `public, no-cache` (always revalidates; VCL rewrites it) | Config Store: `page_ttl` | `post-index`, `post-<slug>`, `tag-<tag>`, `sidebar` |
+| **feed.xml, sitemap.xml, robots.txt** | same as pages | `public, max-age=300` | `page_ttl` | `post-index` |
+| **CSS/JS/fonts** | 1 year (`31536000`) | `public, max-age=31536000, immutable` (URLs carry `?v=<service version>`) | Config Store: `asset_ttl` | `assets` |
+| **Images** (VCL → Object Storage) | 1 year (`31536000`) | `public, max-age=86400` | Edge Dictionary: `image_ttl` | `images`, `image-<slug>` |
+| **Errors and admin** | none | `private, no-store` | — | — |
+
+Admin routes also get `return(pass)` in VCL. `stale-if-error` lets the edge keep serving a cached page for a day if Compute or the KV store is failing.
 
 ### Changing TTLs Live
 
 ```bash
-# Pages — takes effect on next cache miss (or purge first for immediate effect)
+# Pages — takes effect on the next cache miss (purge for immediate effect)
 fastly config-store-entry update \
-  --store-id=<cache-config-store-id> --key=page_ttl --value=86400
+  --store-id=<cache-config-store-id> --key=page_ttl --value=3600
 
-# Images — Edge Dictionary, takes effect immediately on next miss
+# Images — Edge Dictionary
 fastly service dictionary-entry update \
   --service-id=<vcl-service-id> \
   --dictionary-id=<edge_cms_config-dict-id> \
@@ -848,41 +632,37 @@ fastly service dictionary-entry update \
 
 ### Purging
 
-On any admin write (create, update, or delete), Compute calls the Fastly Purge API with the relevant surrogate key, instantly invalidating only the affected cached responses. With aggressive TTLs, purging is the primary cache invalidation mechanism.
+On any admin write Compute calls the Fastly Purge API (`Surrogate-Key`, soft purge) with only the affected keys: create or delete `post-index post-<slug> sidebar` plus each `tag-<t>`; update adds the old slug and tags; sidebar save `sidebar post-index`; upload `image-<slug>`. A non-2xx purge response is logged and surfaces as the dashboard banner described above.
 
 ### Compression
 
-The VCL CDN service applies **brotli** (with gzip fallback) to all text-based responses: HTML, CSS, JS, JSON, XML, and SVG. Images are excluded — they are already compressed by format. Fastly auto-negotiates the encoding based on `Accept-Encoding`.
+The VCL service applies brotli (gzip fallback) to text responses: HTML, CSS, JS, JSON, XML, SVG. Images are excluded.
 
 ---
 
 ## Directory Structure
 
 ```
-edge-cms/
+.
 ├── README.md
-├── DESIGN.md              # Full design document
-├── ../.github/workflows/  # GitHub Actions CI
-│   └── edge-cms-ci.yml    # PR checks: Rust, Go, Terraform, Viceroy, VCL, secrets
-├── shared/                # Shared across all language implementations
+├── DESIGN.md              # Design document
+├── docs/architecture/     # security-hardening-contract.md — interface contract for all backends
+├── .github/               # CI workflow, Dependabot
+├── .hooks/, .pre-commit-config.yaml, .secrets.baseline
+├── scripts/               # kv-backup/kv-restore, run-integration, extract-vcl/lint-vcl
+├── shared/                # Shared across all backends
 │   ├── templates/         # Handlebars templates (.hbs)
-│   ├── css/               # Stylesheet
-│   └── js/                # Admin JavaScript
-├── rust/                  # Rust/Compute implementation (complete)
-│   ├── src/               # Rust source
-│   ├── tests/             # Fixture data and integration tests
-│   ├── .env.example       # Local dev environment template
-│   ├── Cargo.toml
-│   └── fastly.toml        # Compute manifest + local dev store config
-└── terraform/             # Infrastructure-as-code
-    ├── providers.tf        # Fastly provider config
-    ├── variables.tf        # Variable definitions
-    ├── terraform.tfvars.example  # Variable template (copy to terraform.tfvars)
-    ├── compute.tf          # Compute service
-    ├── stores.tf           # KV Store, Secret Store, Config Store, Object Storage access keys
-    ├── vcl.tf              # VCL CDN service with snippets, rate limiter, dictionaries
-    ├── tls.tf              # TLS provisioning notes and commented resources
-    └── outputs.tf          # IDs, credentials, post-apply checklist
+│   ├── css/               # style.css (reader), admin.css (admin + login)
+│   ├── js/                # site.js (public), admin.js
+│   ├── fonts/             # Self-hosted woff2 (OFL)
+│   └── test-fixtures/
+├── rust/                  # Primary implementation
+│   ├── src/
+│   ├── tests/             # Fixtures + shared integration.sh
+│   └── fastly.toml
+├── typescript/            # Parity backend (security fixes only)
+├── go/                    # Parity backend (security fixes only)
+└── terraform/             # VCL service, Compute service, stores, keys, outputs
 ```
 
 ---
@@ -891,8 +671,8 @@ edge-cms/
 
 | Language | Status | Notes |
 |----------|--------|-------|
-| **Rust** | Complete | Primary implementation. All features working. |
-| TypeScript | Planned | Will use `@fastly/js-compute` SDK |
-| Go | Planned | Will use `compute-sdk-go` |
+| **Rust** | Primary | Reference implementation. New features land here first; Terraform deploys it. |
+| TypeScript | Implemented, frozen | Parity backend (`@fastly/js-compute`). Receives security and data-integrity fixes only. |
+| Go | Implemented, frozen | Parity backend (`compute-sdk-go`). Receives security and data-integrity fixes only. |
 
-All implementations share the same templates (`shared/`) and produce identical behavior. The differences are in how each language handles routing, KV Store access, and response construction.
+All implementations share the templates and assets in `shared/` and are held to the same behavior by the shared integration suite and the hardening contract. Go and TypeScript services are not managed by Terraform: deploy them with the CLI, set `go_backend_host` / `ts_backend_host` so the VCL service gets a backend (and DNS record) for them, and switch with the `active_backend` item in `edge_cms_config` (`rust`, `go` or `ts`; an unconfigured choice falls back to Rust). `active_backend` is managed by Terraform, so a manual change is reverted at the next apply.

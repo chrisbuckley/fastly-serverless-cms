@@ -1,11 +1,22 @@
 # ---------------------------------------------------------------------------
 # KV Store — post content, index, sidebar config
+#
+# This is the only copy of the site's content: Terraform must never delete
+# it. force_destroy = false makes the API refuse to delete a non-empty store,
+# and prevent_destroy makes any plan that would destroy it fail. To really
+# remove it, export the content first, then remove both guards deliberately.
+# NOTE: changing `name` or `location` forces replacement — prevent_destroy
+# will block that plan, which is intended.
 # ---------------------------------------------------------------------------
 
 resource "fastly_kvstore" "content" {
   name          = "edge-cms-content"
   location      = "US"
-  force_destroy = true
+  force_destroy = false
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -51,6 +62,8 @@ resource "random_password" "origin_auth_token" {
 #   fastly config-store-entry update --store-id=<id> --key=page_ttl --value=86400
 # ---------------------------------------------------------------------------
 
+# force_destroy = true is fine here: every entry is declared below, so the
+# store can be recreated from this file with no data loss.
 resource "fastly_configstore" "cache_config" {
   name          = "edge-cms-cache-config"
   force_destroy = true

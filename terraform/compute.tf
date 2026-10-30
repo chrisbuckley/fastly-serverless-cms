@@ -81,6 +81,9 @@ resource "fastly_service_compute" "app" {
     }
   }
 
+  # force_destroy deactivates the active version so `terraform destroy` can
+  # delete the service. Kept: services hold no data (content lives in the
+  # protected KV store) and are fully reproducible from this config.
   force_destroy = true
 }
 

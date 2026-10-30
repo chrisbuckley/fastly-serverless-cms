@@ -579,6 +579,10 @@ resource "fastly_service_vcl" "cdn" {
     image_optimizer  = true
   }
 
+  # force_destroy deactivates the active version so `terraform destroy` can
+  # delete the service. Kept: the service holds no data and is fully
+  # reproducible from this config (private dictionary items must be
+  # re-populated per next_steps).
   force_destroy = true
 }
 

@@ -170,5 +170,7 @@ describe("isSafeUrl (rule U)", () => {
     " https://x",
     "https://x\n",
     "vbscript:x",
+    "/\\evil.com",
+    "https://x\\y",
   ])("rejects %j", (u) => expect(isSafeUrl(u)).toBe(false));
 });

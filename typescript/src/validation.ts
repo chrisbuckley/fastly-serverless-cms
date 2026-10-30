@@ -93,7 +93,7 @@ export function extensionMatchesType(filename: string, type: ImageType): boolean
 }
 
 export function isSafeUrl(url: string): boolean {
-  if (/[\u0000- \u007f]/.test(url)) return false;
+  if (/[\u0000- \u007f\\]/.test(url)) return false;
   if (url.startsWith("//")) return false;
   if (url.startsWith("/")) return true;
   return /^https?:\/\/\S+$/i.test(url);

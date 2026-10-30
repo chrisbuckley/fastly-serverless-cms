@@ -46,6 +46,10 @@ resource "fastly_service_compute" "app" {
     use_ssl           = true
     ssl_cert_hostname = "api.fastly.com"
     ssl_sni_hostname  = "api.fastly.com"
+
+    connect_timeout       = 1000
+    first_byte_timeout    = 15000
+    between_bytes_timeout = 10000
   }
 
   # Backend for writing images to Fastly Object Storage from admin upload handler
@@ -56,6 +60,10 @@ resource "fastly_service_compute" "app" {
     use_ssl           = true
     ssl_cert_hostname = "${var.fos_region}.object.fastlystorage.app"
     ssl_sni_hostname  = "${var.fos_region}.object.fastlystorage.app"
+
+    connect_timeout       = 1000
+    first_byte_timeout    = 15000
+    between_bytes_timeout = 10000
   }
 
   dynamic "logging_https" {

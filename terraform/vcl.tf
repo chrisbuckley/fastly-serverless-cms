@@ -32,7 +32,9 @@ resource "fastly_service_vcl" "cdn" {
     ssl_sni_hostname  = "app.${var.domain}"
     override_host     = "app.${var.domain}"
 
-    first_byte_timeout    = 30000
+    shield                = var.shield_pop
+    connect_timeout       = 1000
+    first_byte_timeout    = 15000
     between_bytes_timeout = 10000
 
     request_condition = "snippet-routed"
@@ -47,7 +49,9 @@ resource "fastly_service_vcl" "cdn" {
     ssl_sni_hostname  = "app-go.${var.domain}"
     override_host     = "app-go.${var.domain}"
 
-    first_byte_timeout    = 30000
+    shield                = var.shield_pop
+    connect_timeout       = 1000
+    first_byte_timeout    = 15000
     between_bytes_timeout = 10000
 
     request_condition = "snippet-routed"
@@ -62,7 +66,9 @@ resource "fastly_service_vcl" "cdn" {
     ssl_sni_hostname  = "app-ts.${var.domain}"
     override_host     = "app-ts.${var.domain}"
 
-    first_byte_timeout    = 30000
+    shield                = var.shield_pop
+    connect_timeout       = 1000
+    first_byte_timeout    = 15000
     between_bytes_timeout = 10000
 
     request_condition = "snippet-routed"
@@ -81,6 +87,10 @@ resource "fastly_service_vcl" "cdn" {
     ssl_sni_hostname  = "${var.fos_region}.object.fastlystorage.app"
     override_host     = "${var.fos_region}.object.fastlystorage.app"
     shield            = var.shield_pop
+
+    connect_timeout       = 1000
+    first_byte_timeout    = 15000
+    between_bytes_timeout = 10000
 
     request_condition = "is-image-request"
   }

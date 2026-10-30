@@ -3,7 +3,9 @@
 #
 # Responsibilities:
 #   - Serve /images/* directly from Fastly Object Storage (SigV4-signed)
-#   - Rate-limit POST /admin/login to 5 req/min per IP
+#   - Coarse rate limit on POST /admin/login (Edge Rate Limiting, 10 rps
+#     averaged over 60s — the VCL minimum). The precise 5 attempts/min
+#     limit is enforced inside Compute (ERL login_attempts/login_penalty).
 #   - Cache reader responses using Surrogate-Control from Compute
 #   - Route all other traffic to the Compute service
 #   - (Optional) NGWAF edge deploy — enable product manually after apply
@@ -117,12 +119,6 @@ resource "fastly_service_vcl" "cdn" {
     write_only = true
   }
 
-  # URI list for rate limiting — must contain the paths to protect.
-  # Populated by fastly_service_dictionary_items below.
-  dictionary {
-    name = "edge_cms_rate_limit_uris"
-  }
-
   # Backend selector — set active_backend to "rust" (default), "go", or "ts".
   # Switch live without deploy: fastly dictionary-item update ...
   # Example: fastly dictionary-item update <dict-id> --key=active_backend --value=ts
@@ -185,6 +181,16 @@ resource "fastly_service_vcl" "cdn" {
         synthetic {""};
         return(deliver);
       }
+      if (obj.status == 629) {
+        set obj.status = 429;
+        set obj.response = "Too Many Requests";
+        set obj.http.Content-Type = "text/plain; charset=utf-8";
+        set obj.http.Cache-Control = "private, no-store";
+        set obj.http.Retry-After = "900";
+        synthetic {"Too many login attempts
+"};
+        return(deliver);
+      }
       if (obj.status == 604) {
         set obj.status = 404;
         set obj.response = "Not Found";
@@ -193,6 +199,44 @@ resource "fastly_service_vcl" "cdn" {
         synthetic {"Not Found
 "};
         return(deliver);
+      }
+    VCL
+  }
+
+  # ---------------------------------------------------------------------------
+  # Login rate limit (coarse, edge) — POST /admin/login only.
+  #
+  # ratelimit.check_rate() limit must be >= 10 (rps); below 10 Fastly does not
+  # guarantee accuracy or detection time. 10 rps averaged over a 60s window
+  # (= 600 attempts/min per IP) is the tightest the VCL limiter supports, so
+  # this only stops floods. The precise limit (5 attempts per 60s, then a 15
+  # minute penalty) is enforced in Compute with ERL login_attempts /
+  # login_penalty (contract section 4).
+  #
+  # Counted only on the first Fastly hop so shielded requests aren't counted
+  # twice. Keyed on Fastly-Client-IP, which edge-request has already reset to
+  # client.ip. Requires Edge Rate Limiting to be enabled on the service.
+  # Ref: https://www.fastly.com/documentation/reference/vcl/functions/rate-limiting/ratelimit-check-rate/
+  # ---------------------------------------------------------------------------
+  snippet {
+    name     = "login-ratelimit-init"
+    type     = "init"
+    priority = 10
+    content  = <<-VCL
+      ratecounter rc_admin_login {}
+      penaltybox pb_admin_login {}
+    VCL
+  }
+
+  snippet {
+    name     = "login-ratelimit"
+    type     = "recv"
+    priority = 3
+    content  = <<-VCL
+      if (fastly.ff.visits_this_service == 0 && req.method == "POST" && req.url.path == "/admin/login") {
+        if (ratelimit.check_rate(req.http.Fastly-Client-IP, rc_admin_login, 1, 60, 10, pb_admin_login, 15m)) {
+          error 629 "Too Many Requests";
+        }
       }
     VCL
   }
@@ -481,33 +525,6 @@ resource "fastly_service_vcl" "cdn" {
     VCL
   }
 
-  # ---------------------------------------------------------------------------
-  # Rate limiter: brute-force protection on POST requests (includes /admin/login)
-  #
-  # Fastly ERL minimum is 10 RPS. With window_size=60 this allows 10 req/s
-  # sustained — still blocks automated credential-stuffing attacks.
-  # uri_dictionary_name omitted: Fastly rejects it when the dictionary has no
-  # items at service activation time (items are populated by a separate resource
-  # after service creation). All POSTs on this VCL service hit the Compute app
-  # anyway, so rate-limiting all of them is acceptable for a CMS workload.
-  # ---------------------------------------------------------------------------
-
-  rate_limiter {
-    name                 = "admin-login-protect"
-    action               = "response"
-    client_key           = "client.ip" # pragma: allowlist secret
-    http_methods         = "POST"
-    rps_limit            = 10
-    window_size          = 60
-    penalty_box_duration = 5
-
-    response {
-      status       = 429
-      content_type = "text/html; charset=utf-8"
-      content      = "<!doctype html><html><head><title>429 Too Many Requests</title></head><body><h1>Too Many Requests</h1><p>Too many login attempts. Please wait a few minutes before trying again.</p></body></html>"
-    }
-  }
-
   dynamic "logging_https" {
     for_each = var.logging_endpoint_url != "" ? [1] : []
     content {
@@ -566,17 +583,8 @@ resource "fastly_service_vcl" "cdn" {
 }
 
 # ---------------------------------------------------------------------------
-# Dictionary items — rate-limit URI list and Object Storage credentials
+# Dictionary items — backend selector and image TTL
 # ---------------------------------------------------------------------------
-
-resource "fastly_service_dictionary_items" "rate_limit_uris" {
-  service_id    = fastly_service_vcl.cdn.id
-  dictionary_id = { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_rate_limit_uris"]
-
-  items = {
-    "/admin/login" = "1"
-  }
-}
 
 resource "fastly_service_dictionary_items" "config" {
   service_id    = fastly_service_vcl.cdn.id

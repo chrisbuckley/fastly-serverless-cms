@@ -378,6 +378,27 @@ mod tests {
     }
 
     #[test]
+    fn unclosed_iframe_is_balanced() {
+        for input in [
+            r#"<iframe src="https://www.youtube.com/embed/x">"#,
+            "<iframe src=\"https://www.youtube.com/embed/x\">\n\nafter **bold**",
+            "<iframe src=\"https://www.youtube.com/embed/x\"></iframe>\n\n<iframe src=\"https://player.vimeo.com/video/1\">",
+            r#"<iframe width="560">"#,
+        ] {
+            let out = render_post_html(input);
+            assert_eq!(
+                out.matches("<iframe").count(),
+                out.matches("</iframe>").count(),
+                "{input}: {out}"
+            );
+        }
+        assert!(
+            render_post_html(r#"<iframe src="https://www.youtube.com/embed/x">"#)
+                .contains(r#"src="https://www.youtube.com/embed/x""#)
+        );
+    }
+
+    #[test]
     fn sanitize_keeps_tables() {
         let out = sanitize(&render_markdown("| a | b |\n|---|---|\n| 1 | 2 |"));
         for t in ["<table>", "<thead>", "<tbody>", "<th>", "<td>"] {

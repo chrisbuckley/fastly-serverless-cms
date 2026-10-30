@@ -6,6 +6,26 @@ import (
 	"github.com/fastly/compute-sdk-go/fsthttp"
 )
 
+func TestRateLimitKey(t *testing.T) {
+	tests := []struct {
+		name, in, want string
+	}{
+		{"ipv4 unchanged", "203.0.113.7", "203.0.113.7"},
+		{"ipv6 full", "2001:db8:1:2:aaaa:bbbb:cccc:dddd", "2001:db8:1:2::/64"},
+		{"ipv6 same /64", "2001:db8:1:2::1", "2001:db8:1:2::/64"},
+		{"ipv6 short", "2001:db8::1", "2001:db8::/64"},
+		{"ipv6 zone dropped", "fe80::1%eth0", "fe80::/64"},
+		{"ipv4-mapped ipv6", "::ffff:198.51.100.9", "198.51.100.9"},
+		{"unparseable", "not-an-ip", "not-an-ip"},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		if got := rateLimitKey(tt.in); got != tt.want {
+			t.Errorf("%s: rateLimitKey(%q) = %q want %q", tt.name, tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestOriginAuthOK(t *testing.T) {
 	tests := []struct {
 		name          string

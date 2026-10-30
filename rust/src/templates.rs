@@ -192,8 +192,20 @@ pub fn percent_encode(s: &str) -> String {
 }
 
 /// Serialise JSON for embedding inside `<script type="application/ld+json">`.
+/// `<`, `>` and `&` can only occur inside JSON strings, so escaping them as
+/// `\uXXXX` is lossless and prevents `</script>` and `<!--` breakouts.
 pub fn script_safe_json(v: &Value) -> String {
-    v.to_string().replace("</", "<\\/")
+    let raw = v.to_string();
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        match c {
+            '<' => out.push_str("\\u003c"),
+            '>' => out.push_str("\\u003e"),
+            '&' => out.push_str("\\u0026"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 // format_date: convert "2026-05-20T14:30:00Z" -> "May 20, 2026"
@@ -366,6 +378,18 @@ mod tests {
         let v = json!({"headline": "</script><script>alert(1)</script>"});
         let s = script_safe_json(&v);
         assert!(!s.contains("</"));
+        let back: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn json_ld_escapes_comment_and_markup_chars() {
+        let v = json!({"headline": "<!--<script> a&b -->"});
+        let s = script_safe_json(&v);
+        assert!(!s.contains('<'));
+        assert!(!s.contains('>'));
+        assert!(!s.contains('&'));
+        assert!(s.contains("\\u003c!--\\u003cscript\\u003e a\\u0026b --\\u003e"));
         let back: Value = serde_json::from_str(&s).unwrap();
         assert_eq!(back, v);
     }

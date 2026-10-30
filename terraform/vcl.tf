@@ -185,6 +185,15 @@ resource "fastly_service_vcl" "cdn" {
         synthetic {""};
         return(deliver);
       }
+      if (obj.status == 604) {
+        set obj.status = 404;
+        set obj.response = "Not Found";
+        set obj.http.Content-Type = "text/plain; charset=utf-8";
+        set obj.http.Cache-Control = "private, no-store";
+        synthetic {"Not Found
+"};
+        return(deliver);
+      }
     VCL
   }
 
@@ -278,6 +287,11 @@ resource "fastly_service_vcl" "cdn" {
     priority = 100
     content  = <<-VCL
       if (req.url.path ~ "^/images/") {
+        # Only /images/<slug>/<file>.<jpg|jpeg|png|webp|gif> is served;
+        # anything else (other types, nested paths, bare slugs) is a 404.
+        if (req.url.path !~ "^/images/[a-z0-9][a-z0-9-]*/[^/]+\.(?i:jpe?g|png|webp|gif)$") {
+          error 604 "Not Found";
+        }
         set req.backend = F_edge_cms_fos;
         set req.http.X-Fastly-Imageopto-Api = "fastly";
       }
@@ -372,12 +386,40 @@ resource "fastly_service_vcl" "cdn" {
     type     = "fetch"
     priority = 100
     content  = <<-VCL
-      if (req.backend == F_edge_cms_fos) {
-        declare local var.image_ttl STRING;
-        set var.image_ttl = table.lookup(edge_cms_config, "image_ttl", "31536000");
-        set beresp.ttl = std.atoi(var.image_ttl);
-        set beresp.http.Cache-Control = "max-age=" + var.image_ttl + ", public";
-        set beresp.http.Surrogate-Key = "images";
+      # Path-based (not req.backend) so it runs on the shield, which fetches
+      # from Object Storage, and on the edge, which fetches from the shield.
+      if (req.url.path ~ "^/images/([a-z0-9][a-z0-9-]*)/") {
+        declare local var.image_slug STRING;
+        set var.image_slug = re.group.1;
+        # Purged by Compute on upload: image-<slug> (contract section 7).
+        set beresp.http.Surrogate-Key = "images image-" + var.image_slug;
+
+        if (beresp.status == 200) {
+          # Never trust the stored Content-Type: derive it from the
+          # (already allowlisted in images-route) extension.
+          if (req.url.path ~ "(?i)\.jpe?g$") {
+            set beresp.http.Content-Type = "image/jpeg";
+          } else if (req.url.path ~ "(?i)\.png$") {
+            set beresp.http.Content-Type = "image/png";
+          } else if (req.url.path ~ "(?i)\.webp$") {
+            set beresp.http.Content-Type = "image/webp";
+          } else {
+            set beresp.http.Content-Type = "image/gif";
+          }
+
+          # Edge TTL is long (image_ttl, default 1y) because uploads purge
+          # image-<slug>. Browsers can't be purged and image URLs are not
+          # versioned, so their TTL is capped at 1 day.
+          declare local var.image_ttl STRING;
+          set var.image_ttl = table.lookup(edge_cms_config, "image_ttl", "31536000");
+          set beresp.ttl = std.atoi(var.image_ttl);
+          set beresp.http.Cache-Control = "public, max-age=86400";
+        } else {
+          # Missing objects / Object Storage errors: cache briefly at the
+          # edge to absorb floods, never in browsers.
+          set beresp.ttl = 60s;
+          set beresp.http.Cache-Control = "private, no-store";
+        }
       }
     VCL
   }
@@ -391,6 +433,13 @@ resource "fastly_service_vcl" "cdn" {
       unset resp.http.X-Amz-Request-Id;
       unset resp.http.X-Amz-Id-2;
       unset resp.http.X-Amz-Version-Id;
+
+      # Image responses must never be interpreted as anything but an image,
+      # even if a non-image byte stream was stored under an image name.
+      if (req.url.path ~ "^/images/") {
+        set resp.http.X-Content-Type-Options = "nosniff";
+        set resp.http.Content-Security-Policy = "default-src 'none'; sandbox";
+      }
     VCL
   }
 

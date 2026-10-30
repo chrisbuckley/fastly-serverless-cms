@@ -10,14 +10,38 @@ resource "fastly_kvstore" "content" {
 
 # ---------------------------------------------------------------------------
 # Secret Store — admin_password (bcrypt), hmac_key, fastly_api_token,
-#                purge_service_id, fos_access_key_id, fos_secret_key
+#                purge_service_id, fos_access_key_id, fos_secret_key,
+#                fos_region, fos_bucket, origin_auth_token
 #
-# The store is created empty. Populate secrets manually after apply:
-#   fastly secret-store-entry create --store-id=<id> --name=<key> --secret=<val>
+# The Fastly provider has no resource for secret store entries, so the store
+# is created empty and populated after apply with `--stdin` (see the
+# next_steps output). Never pass secret values as command-line arguments.
 # ---------------------------------------------------------------------------
 
 resource "fastly_secretstore" "secrets" {
   name = "edge-cms-secrets"
+}
+
+# ---------------------------------------------------------------------------
+# Origin auth — shared secret the VCL service sends to the Compute services
+# in the Edge-CMS-Origin-Auth header (contract §1). Compute rejects any
+# request without it, so app.<domain> can't be used to bypass the CDN layer.
+#
+# Terraform generates the value; it must be written (post-apply, see
+# next_steps) to BOTH:
+#   - Secret Store `secrets`, key `origin_auth_token`   (read by Compute)
+#   - private dictionary `edge_cms_private`, key `origin_auth_token` (VCL)
+# Neither can be written by Terraform: the provider has no secret-entry
+# resource and cannot manage items in write-only (private) dictionaries.
+#
+# Rotate: terraform apply -replace=random_password.origin_auth_token, then
+# rewrite the dictionary item first and the secret second (brief 403s on
+# requests in flight between the two writes).
+# ---------------------------------------------------------------------------
+
+resource "random_password" "origin_auth_token" {
+  length  = 48
+  special = false
 }
 
 # ---------------------------------------------------------------------------

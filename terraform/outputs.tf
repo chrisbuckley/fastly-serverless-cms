@@ -40,6 +40,17 @@ output "fos_dict_id" {
   value       = { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_fos_creds"]
 }
 
+output "private_dict_id" {
+  description = "Private VCL dictionary ID for the origin auth token (edge_cms_private)"
+  value       = { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_private"]
+}
+
+output "origin_auth_token" {
+  description = "Shared secret for the Edge-CMS-Origin-Auth header — write to the secret store and edge_cms_private (see next_steps)"
+  value       = random_password.origin_auth_token.result
+  sensitive   = true
+}
+
 # ---------------------------------------------------------------------------
 # Squarespace DNS — routing CNAMEs
 # Add these to route traffic to Fastly.

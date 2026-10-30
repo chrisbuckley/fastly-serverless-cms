@@ -99,6 +99,14 @@ resource "fastly_service_vcl" "cdn" {
     write_only = true
   }
 
+  # Private dictionary — origin auth shared secret (key: origin_auth_token).
+  # Value comes from random_password.origin_auth_token; populate after apply
+  # (see next_steps). Terraform cannot manage items in private dictionaries.
+  dictionary {
+    name       = "edge_cms_private"
+    write_only = true
+  }
+
   # URI list for rate limiting — must contain the paths to protect.
   # Populated by fastly_service_dictionary_items below.
   dictionary {
@@ -120,6 +128,56 @@ resource "fastly_service_vcl" "cdn" {
   #   2. Sign in vcl_miss — only runs on cache misses (avoids signing overhead
   #      on cache hits, and signing needs the final rewritten URL)
   # ---------------------------------------------------------------------------
+
+  # ---------------------------------------------------------------------------
+  # Edge request hygiene — runs first in vcl_recv.
+  #   - Clients must never supply the origin auth header.
+  #   - Fastly-Client-IP is preserved by Fastly if the client sends it, so on
+  #     the first Fastly hop (edge, not shield) overwrite it with the real
+  #     client IP. Compute trusts it once origin auth passes (contract §1).
+  # ---------------------------------------------------------------------------
+  snippet {
+    name     = "edge-request"
+    type     = "recv"
+    priority = 1
+    content  = <<-VCL
+      unset req.http.Edge-CMS-Origin-Auth;
+      if (fastly.ff.visits_this_service == 0) {
+        set req.http.Fastly-Client-IP = client.ip;
+      }
+    VCL
+  }
+
+  # ---------------------------------------------------------------------------
+  # Origin auth — inject the shared secret on every backend request bound for
+  # a Compute service (vcl_miss and vcl_pass). /images/* always routes to
+  # Object Storage (see images-route) and must never receive the secret.
+  # ---------------------------------------------------------------------------
+  snippet {
+    name     = "origin-auth-miss"
+    type     = "miss"
+    priority = 5
+    content  = <<-VCL
+      if (req.url.path !~ "^/images/") {
+        set bereq.http.Edge-CMS-Origin-Auth = table.lookup(edge_cms_private, "origin_auth_token", "");
+      } else {
+        unset bereq.http.Edge-CMS-Origin-Auth;
+      }
+    VCL
+  }
+
+  snippet {
+    name     = "origin-auth-pass"
+    type     = "pass"
+    priority = 5
+    content  = <<-VCL
+      if (req.url.path !~ "^/images/") {
+        set bereq.http.Edge-CMS-Origin-Auth = table.lookup(edge_cms_private, "origin_auth_token", "");
+      } else {
+        unset bereq.http.Edge-CMS-Origin-Auth;
+      }
+    VCL
+  }
 
   snippet {
     name     = "backend-select"

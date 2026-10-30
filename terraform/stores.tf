@@ -68,24 +68,33 @@ resource "fastly_configstore_entries" "cache_config" {
 }
 
 # ---------------------------------------------------------------------------
-# Fastly Object Storage — image bucket + access key
+# Fastly Object Storage — least-privilege access keys (one per consumer)
+#
+# Permission values (Fastly API, Object Storage access keys):
+#   read-write-admin | read-only-admin | read-write-objects | read-only-objects
+# "-objects" keys can be limited to specific buckets and cannot manage
+# buckets. Permissions can't be changed after creation — changing
+# `permission` replaces the key (new ID + secret).
+# Ref: https://www.fastly.com/documentation/reference/api/services/resources/object-storage-access-keys/
 # ---------------------------------------------------------------------------
 
-resource "fastly_object_storage_access_keys" "fos" {
-  description = "edge-cms image store — read-write for VCL and Compute"
-  permission  = "read-write-admin"
+# VCL service: SigV4-signs GETs for /images/* → read-only. Goes in the
+# edge_cms_fos_creds private dictionary (populated post-apply).
+resource "fastly_object_storage_access_keys" "fos_readonly" {
+  description = "edge-cms images — read-only, VCL image delivery"
+  permission  = "read-only-objects"
   buckets     = [var.fos_bucket]
 }
 
-# Object Storage bucket is created manually (Terraform chicken-and-egg: AWS
-# provider needs credentials that come from fastly_object_storage_access_keys,
-# which doesn't exist at plan time). After first `terraform apply`:
-#
-#   eval "$(terraform output -json | jq -r '"
-#     export AWS_ACCESS_KEY_ID=\(.fos_access_key_id.value)
-#     export AWS_SECRET_ACCESS_KEY=\(.fos_secret_key.value)"')"
-#   aws s3 mb s3://edge-cms-images \
-#     --endpoint-url https://us-east-1.object.fastlystorage.app \
-#     --region us-east-1
-#
-# Or simply: see the "BUCKET" step in the next_steps output.
+# Compute service: admin image uploads → read/write objects, no bucket admin.
+# Goes in the Secret Store as fos_access_key_id / fos_secret_key.
+resource "fastly_object_storage_access_keys" "fos_readwrite" {
+  description = "edge-cms images — read-write objects, Compute uploads"
+  permission  = "read-write-objects"
+  buckets     = [var.fos_bucket]
+}
+
+# The bucket itself is created manually, once, with a short-lived
+# read-write-admin key that is deleted straight afterwards (neither key above
+# may create buckets, and the AWS provider can't use credentials that don't
+# exist at plan time). See the "Object Storage bucket" step in next_steps.

@@ -24,14 +24,25 @@ output "secret_store_id" {
   value       = fastly_secretstore.secrets.id
 }
 
-output "fos_access_key_id" {
-  description = "Object Storage access key ID"
-  value       = fastly_object_storage_access_keys.fos.access_key_id
+output "fos_readonly_access_key_id" {
+  description = "Object Storage read-only key ID (VCL edge_cms_fos_creds dictionary)"
+  value       = fastly_object_storage_access_keys.fos_readonly.access_key_id
 }
 
-output "fos_secret_key" {
-  description = "Object Storage secret key"
-  value       = fastly_object_storage_access_keys.fos.secret_key
+output "fos_readonly_secret_key" {
+  description = "Object Storage read-only secret key (VCL edge_cms_fos_creds dictionary)"
+  value       = fastly_object_storage_access_keys.fos_readonly.secret_key
+  sensitive   = true
+}
+
+output "fos_readwrite_access_key_id" {
+  description = "Object Storage read-write-objects key ID (Compute secret fos_access_key_id)"
+  value       = fastly_object_storage_access_keys.fos_readwrite.access_key_id
+}
+
+output "fos_readwrite_secret_key" {
+  description = "Object Storage read-write-objects secret key (Compute secret fos_secret_key)"
+  value       = fastly_object_storage_access_keys.fos_readwrite.secret_key
   sensitive   = true
 }
 
@@ -109,7 +120,8 @@ output "next_steps" {
       Compute (Go):   (managed via CLI — see compute.tf)
       KV Store:       ${fastly_kvstore.content.id}
       Secret Store:   ${fastly_secretstore.secrets.id}
-      FOS key ID:     ${fastly_object_storage_access_keys.fos.access_key_id}
+      FOS RO key ID:  ${fastly_object_storage_access_keys.fos_readonly.access_key_id}  (VCL)
+      FOS RW key ID:  ${fastly_object_storage_access_keys.fos_readwrite.access_key_id}  (Compute)
       FOS dict:       ${ { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_fos_creds"]}
       Config dict:    ${ { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_config"]}
 
@@ -127,35 +139,41 @@ output "next_steps" {
 
     # Generate admin password hash (Python bcrypt):
     BCRYPT=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'YOUR_PASSWORD', bcrypt.gensalt()).decode())")
-    FOS_SECRET=$(terraform output -raw fos_secret_key)
+    FOS_SECRET=$(terraform output -raw fos_readwrite_secret_key)
 
     SSID="${fastly_secretstore.secrets.id}"
     echo -n "$BCRYPT"                                        | fastly secret-store-entry create --store-id=$SSID --name=admin_password   --stdin --recreate-allow
     echo -n "$(openssl rand -base64 32)"                    | fastly secret-store-entry create --store-id=$SSID --name=hmac_key         --stdin --recreate-allow
     echo -n '<YOUR_FASTLY_API_TOKEN>'                        | fastly secret-store-entry create --store-id=$SSID --name=fastly_api_token  --stdin --recreate-allow  # needs purge scope on VCL service
     echo -n "${fastly_service_vcl.cdn.id}"                  | fastly secret-store-entry create --store-id=$SSID --name=purge_service_id  --stdin --recreate-allow
-    echo -n "${fastly_object_storage_access_keys.fos.access_key_id}" | fastly secret-store-entry create --store-id=$SSID --name=fos_access_key_id --stdin --recreate-allow
+    echo -n "${fastly_object_storage_access_keys.fos_readwrite.access_key_id}" | fastly secret-store-entry create --store-id=$SSID --name=fos_access_key_id --stdin --recreate-allow
     echo -n "$FOS_SECRET"                                   | fastly secret-store-entry create --store-id=$SSID --name=fos_secret_key    --stdin --recreate-allow
     echo -n "${var.fos_region}"                             | fastly secret-store-entry create --store-id=$SSID --name=fos_region        --stdin --recreate-allow
     echo -n "${var.fos_bucket}"                             | fastly secret-store-entry create --store-id=$SSID --name=fos_bucket        --stdin --recreate-allow
 
-    ── VCL Dictionary (FOS SigV4 credentials) ──────────────────────────────
+    ── VCL Dictionary (FOS SigV4 credentials — read-only key) ─────────────
 
     VCL_SID="${fastly_service_vcl.cdn.id}"
     DICT_ID="${ { for d in fastly_service_vcl.cdn.dictionary : d.name => d.dictionary_id }["edge_cms_fos_creds"]}"
 
     fastly service-dictionary-item create --service-id=$VCL_SID --dictionary-id=$DICT_ID \
-      --key=access_key_id --value="${fastly_object_storage_access_keys.fos.access_key_id}"
+      --key=access_key_id --value="${fastly_object_storage_access_keys.fos_readonly.access_key_id}"
     fastly service-dictionary-item create --service-id=$VCL_SID --dictionary-id=$DICT_ID \
-      --key=secret_key --value="$(terraform output -raw fos_secret_key)"
+      --key=secret_key --value="$(terraform output -raw fos_readonly_secret_key)"
 
     ── Object Storage bucket ────────────────────────────────────────────────
 
-    export AWS_ACCESS_KEY_ID="${fastly_object_storage_access_keys.fos.access_key_id}"
-    export AWS_SECRET_ACCESS_KEY="$(terraform output -raw fos_secret_key)"
+    # One-off (skip if the bucket exists). Neither Terraform-managed key can
+    # create buckets, so mint a temporary admin key and delete it afterwards.
+    fastly object-storage access-keys create --description="edge-cms bucket bootstrap (delete me)" \
+      --permission=read-write-admin --json   # note access_key_id + secret_key
+    read -r  AWS_ACCESS_KEY_ID;     export AWS_ACCESS_KEY_ID
+    read -rs AWS_SECRET_ACCESS_KEY; export AWS_SECRET_ACCESS_KEY
     aws s3 mb s3://${var.fos_bucket} \
       --endpoint-url https://${var.fos_region}.object.fastlystorage.app \
       --region ${var.fos_region}
+    fastly object-storage access-keys delete --ak-id="$AWS_ACCESS_KEY_ID"
+    unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 
     ── KV seed (empty initial state) ───────────────────────────────────────
 

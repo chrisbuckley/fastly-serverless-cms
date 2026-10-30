@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"strings"
 
+	"github.com/microcosm-cc/bluemonday"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/renderer/html"
@@ -15,7 +17,69 @@ var md = goldmark.New(
 	goldmark.WithRendererOptions(html.WithUnsafe()),
 )
 
-// RenderMarkdown converts markdown text to HTML using goldmark.
+var (
+	codeClassRe  = regexp.MustCompile(`^language-[a-z0-9+-]+$`)
+	alignRe      = regexp.MustCompile(`^(left|right|center)$`)
+	dimensionRe  = regexp.MustCompile(`^[0-9]+(px|%)?$`)
+	checkboxRe   = regexp.MustCompile(`^checkbox$`)
+	embedSrcRe   = regexp.MustCompile(`^https://(www\.youtube-nocookie\.com|www\.youtube\.com|player\.vimeo\.com)/[^\s"'<>]*$`)
+	iframeTagRe  = regexp.MustCompile(`(?is)<iframe\b[^>]*>.*?</iframe>`)
+	inputTagRe   = regexp.MustCompile(`(?i)<input\b[^>]*>`)
+	externalLink = regexp.MustCompile(`(?i)<a\b([^>]*\shref="https?://[^>]*)>`)
+	sanitizer    = newSanitizer()
+)
+
+// newSanitizer builds the allowlist policy from the security contract
+// (section 11). Constraints bluemonday cannot express directly (dropping
+// iframes without a valid src, forcing disabled checkboxes, rel on external
+// links) are applied by postSanitize.
+func newSanitizer() *bluemonday.Policy {
+	p := bluemonday.NewPolicy()
+	p.AllowElements("p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li",
+		"blockquote", "em", "strong", "del", "s", "table", "thead", "tbody", "tr",
+		"hr", "br", "sup", "sub", "details", "summary", "figure", "figcaption",
+		"pre", "code", "span", "div", "a", "img", "th", "td", "input", "iframe")
+	p.AllowAttrs("href", "title").OnElements("a")
+	p.AllowAttrs("src", "alt", "title").OnElements("img")
+	p.AllowAttrs("width", "height").Matching(dimensionRe).OnElements("img", "iframe")
+	p.AllowAttrs("class").Matching(codeClassRe).OnElements("code", "pre", "span", "div")
+	p.AllowAttrs("align").Matching(alignRe).OnElements("th", "td")
+	p.AllowAttrs("type").Matching(checkboxRe).OnElements("input")
+	p.AllowAttrs("disabled", "checked").OnElements("input")
+	p.AllowAttrs("src").Matching(embedSrcRe).OnElements("iframe")
+	p.AllowAttrs("title", "allow").OnElements("iframe")
+	p.AllowAttrs("allowfullscreen").OnElements("iframe")
+	p.AllowURLSchemes("http", "https", "mailto")
+	p.AllowRelativeURLs(true)
+	return p
+}
+
+// SanitizeHTML applies the contract allowlist to untrusted HTML.
+func SanitizeHTML(unsafe string) string {
+	return postSanitize(sanitizer.Sanitize(unsafe))
+}
+
+func postSanitize(h string) string {
+	h = iframeTagRe.ReplaceAllStringFunc(h, func(tag string) string {
+		if strings.Contains(tag, ` src="`) {
+			return tag
+		}
+		return ""
+	})
+	h = inputTagRe.ReplaceAllStringFunc(h, func(tag string) string {
+		if !strings.Contains(tag, `type="checkbox"`) {
+			return ""
+		}
+		if !strings.Contains(tag, " disabled") {
+			return strings.Replace(tag, "<input", `<input disabled=""`, 1)
+		}
+		return tag
+	})
+	return externalLink.ReplaceAllString(h, `<a$1 rel="noopener noreferrer">`)
+}
+
+// RenderMarkdown converts markdown text to HTML using goldmark (raw HTML is
+// parsed) and then sanitizes the result with the contract allowlist.
 // Returns empty string on empty input.
 func RenderMarkdown(input string) string {
 	if input == "" {
@@ -25,7 +89,7 @@ func RenderMarkdown(input string) string {
 	if err := md.Convert([]byte(input), &buf); err != nil {
 		return ""
 	}
-	return buf.String()
+	return SanitizeHTML(buf.String())
 }
 
 // RewriteImages scans for <img src="/images/..."> tags and replaces each with

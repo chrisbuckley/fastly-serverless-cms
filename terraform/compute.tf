@@ -1,7 +1,9 @@
 # ---------------------------------------------------------------------------
 # Compute service — Rust WASM app
-# Internal: traffic reaches it through the VCL CDN service.
-# Domain: app.<domain> — needs a CNAME to Fastly (see outputs).
+# Internal: traffic reaches it through the VCL CDN service. The app rejects
+# (403) any request without the VCL-injected Edge-CMS-Origin-Auth header, so
+# app.<domain> being publicly resolvable doesn't bypass the CDN layer.
+# Domain: app.<domain> — needs a DNS record (see dns_routing_records output).
 # ---------------------------------------------------------------------------
 
 resource "fastly_service_compute" "app" {
@@ -25,7 +27,8 @@ resource "fastly_service_compute" "app" {
   }
 
   # Secret Store for admin_password, hmac_key, fastly_api_token, purge_service_id,
-  # fos_access_key_id, fos_secret_key (for admin image uploads to Object Storage)
+  # origin_auth_token, fos_region, fos_bucket, fos_access_key_id/fos_secret_key
+  # (read-write-objects key for admin image uploads to Object Storage)
   resource_link {
     name        = "secrets"
     resource_id = fastly_secretstore.secrets.id

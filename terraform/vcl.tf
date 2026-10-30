@@ -126,22 +126,6 @@ resource "fastly_service_vcl" "cdn" {
   }
 
   # ---------------------------------------------------------------------------
-  # VCL snippet: route /images/* to Object Storage with SigV4 signing
-  #
-  # Flow:
-  #   1. Detect /images/* in vcl_recv — rewrite URL, set FOS backend
-  #   2. Sign in vcl_miss — only runs on cache misses (avoids signing overhead
-  #      on cache hits, and signing needs the final rewritten URL)
-  # ---------------------------------------------------------------------------
-
-  # ---------------------------------------------------------------------------
-  # Edge request hygiene — runs first in vcl_recv.
-  #   - Clients must never supply the origin auth header.
-  #   - Fastly-Client-IP is preserved by Fastly if the client sends it, so on
-  #     the first Fastly hop (edge, not shield) overwrite it with the real
-  #     client IP. Compute trusts it once origin auth passes (contract §1).
-  # ---------------------------------------------------------------------------
-  # ---------------------------------------------------------------------------
   # Force TLS — plain-HTTP requests get a 301 to https:// (handled in the
   # edge-errors snippet). Only checked on the first Fastly hop: edge→shield
   # traffic is Fastly-internal and must not be redirected.
@@ -240,6 +224,14 @@ resource "fastly_service_vcl" "cdn" {
     VCL
   }
 
+  # ---------------------------------------------------------------------------
+  # Edge request hygiene — runs right after force-tls, before anything that
+  # reads Fastly-Client-IP (login-ratelimit, logging, Compute).
+  #   - Clients must never supply the origin auth header.
+  #   - Fastly-Client-IP is preserved by Fastly if the client sends it, so on
+  #     the first Fastly hop (edge, not shield) overwrite it with the real
+  #     client IP. Compute trusts it once origin auth passes (contract §1).
+  # ---------------------------------------------------------------------------
   snippet {
     name     = "edge-request"
     type     = "recv"
@@ -331,6 +323,16 @@ resource "fastly_service_vcl" "cdn" {
     statement = "req.url.path ~ \"^/images/\""
   }
 
+  # ---------------------------------------------------------------------------
+  # /images/* — served from Object Storage with SigV4 signing
+  #
+  # Flow:
+  #   1. images-route (recv): allowlist the path, set the FOS backend
+  #   2. images-sign (miss): rewrite to the bucket path and sign — only on
+  #      cache misses at the node fetching from Object Storage
+  #   3. images-cache (fetch): Content-Type, TTLs, surrogate keys
+  #   4. images-deliver (deliver): strip amz headers, nosniff + CSP
+  # ---------------------------------------------------------------------------
   snippet {
     name     = "images-route"
     type     = "recv"

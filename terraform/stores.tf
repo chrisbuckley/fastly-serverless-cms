@@ -60,7 +60,8 @@ resource "random_password" "origin_auth_token" {
 #                page_size
 #
 # TTLs are seconds. Edits made outside Terraform are reverted on the next
-# apply (manage_entries = true). Change live without deploy via:
+# apply (manage_entries = true). Change live without deploy (until the next
+# apply — update the value here to make it stick) via:
 #   fastly config-store-entry update --store-id=<id> --key=page_ttl --value=86400
 # ---------------------------------------------------------------------------
 

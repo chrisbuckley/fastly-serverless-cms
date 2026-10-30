@@ -371,6 +371,8 @@
     // ---- Markdown preview ------------------------------------
 
     function safeUrl(url) {
+      // Browsers strip control chars/whitespace before parsing the scheme.
+      if (/[\x00-\x20\\]/.test(url)) return '#';
       var scheme = url.match(/^([a-z][a-z0-9+.\-]*):/i);
       if (scheme) {
         return /^(https?|mailto)$/i.test(scheme[1]) ? url : '#';

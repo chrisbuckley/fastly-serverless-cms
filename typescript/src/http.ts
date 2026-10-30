@@ -10,8 +10,27 @@ export async function readBody(req: Request, maxBytes: number): Promise<BodyResu
     const n = Number(declared);
     if (Number.isFinite(n) && n > maxBytes) return { ok: false };
   }
-  const bytes = new Uint8Array(await req.arrayBuffer());
-  return bytes.length > maxBytes ? { ok: false } : { ok: true, bytes };
+  if (!req.body) return { ok: true, bytes: new Uint8Array(0) };
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return { ok: false };
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    bytes.set(c, off);
+    off += c.length;
+  }
+  return { ok: true, bytes };
 }
 
 export function wantsJson(req: Request): boolean {

@@ -47,7 +47,10 @@ export function buildJsonLd(input: JsonLdInput): string {
     publisher: { "@type": "Organization", name: "edge/cms" },
   };
   if (input.image) doc.image = input.image;
-  return JSON.stringify(doc).replace(/<\//g, "<\\/");
+  return JSON.stringify(doc)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026");
 }
 
 export function robotsTxt(siteUrl: string): string {

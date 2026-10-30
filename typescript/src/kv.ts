@@ -25,7 +25,9 @@ async function readJson<T>(key: string): Promise<T | null> {
 
 export async function readIndex(): Promise<PostIndex> {
   const idx = await readJson<PostIndex>("_index");
-  return idx && Array.isArray(idx.posts) ? idx : { posts: [] };
+  if (idx === null) return { posts: [] };
+  if (!Array.isArray(idx.posts)) throw new Error("malformed _index in KV: missing posts array");
+  return idx;
 }
 
 export async function readSidebar(): Promise<SidebarConfig> {

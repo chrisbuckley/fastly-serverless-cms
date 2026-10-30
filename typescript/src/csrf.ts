@@ -14,7 +14,7 @@ function originOf(value: string): string | null {
 }
 
 export function csrfAllowed(headers: Headers, siteUrl: string): boolean {
-  const fetchSite = headers.get("sec-fetch-site");
+  const fetchSite = headers.get("sec-fetch-site")?.toLowerCase() ?? null;
   if (fetchSite !== null) {
     return fetchSite === "same-origin" || fetchSite === "none";
   }

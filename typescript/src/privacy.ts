@@ -1,7 +1,7 @@
 const IPV4_RE = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}$/;
 const HEXTET_RE = /^[0-9a-f]{1,4}$/;
 
-function expandIpv6(addr: string): string[] | null {
+export function expandIpv6(addr: string): string[] | null {
   const halves = addr.split("::");
   if (halves.length > 2) return null;
   const head = halves[0] === "" ? [] : halves[0].split(":");

@@ -124,6 +124,12 @@ resource "fastly_service_compute" "app" {
 #     resource_id = fastly_secretstore.secrets.id
 #   }
 #
+#   # Required: the Go app reads site_url, TTLs and page_size from cache_config.
+#   resource_link {
+#     name        = "cache_config"
+#     resource_id = fastly_configstore.cache_config.id
+#   }
+#
 #   backend {
 #     name              = "fastly-api"
 #     address           = "api.fastly.com"
@@ -145,7 +151,8 @@ resource "fastly_service_compute" "app" {
 #   dynamic "logging_https" {
 #     for_each = var.logging_endpoint_url != "" ? [1] : []
 #     content {
-#       name              = "edge-cms-app-go-logs"
+#       # Must match logEndpointName in go/logging.go.
+#       name              = "edge-cms-app-logs"
 #       url               = var.logging_endpoint_url
 #       method            = "POST"
 #       content_type      = "application/json"

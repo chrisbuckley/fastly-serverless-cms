@@ -36,16 +36,48 @@ pub struct PostMeta {
     pub excerpt: String,
     pub status: PostStatus,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
     pub tags: Vec<String>,
     pub featured_image: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl PostMeta {
+    pub fn from_post(post: &Post) -> Self {
+        Self {
+            slug: post.slug.clone(),
+            title: post.title.clone(),
+            excerpt: post.excerpt.clone(),
+            status: post.status.clone(),
+            created_at: post.created_at.clone(),
+            updated_at: Some(post.updated_at.clone()),
+            tags: post.tags.clone(),
+            featured_image: post
+                .featured_image
+                .clone()
+                .or_else(|| first_content_image(&post.content)),
+        }
+    }
+
+    /// `updated_at`, falling back to `created_at` (sitemap `<lastmod>`).
+    pub fn last_modified(&self) -> &str {
+        self.updated_at.as_deref().unwrap_or(&self.created_at)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PostIndex {
     pub posts: Vec<PostMeta>,
 }
 
 impl PostIndex {
+    /// Rebuild an index from full posts, newest `created_at` first.
+    pub fn from_posts(posts: &[Post]) -> Self {
+        let mut metas: Vec<PostMeta> = posts.iter().map(PostMeta::from_post).collect();
+        metas.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Self { posts: metas }
+    }
+
     pub fn published(&self) -> Vec<&PostMeta> {
         self.posts
             .iter()
@@ -74,22 +106,7 @@ impl PostIndex {
 
     pub fn add(&mut self, post: &Post) {
         self.posts.retain(|p| p.slug != post.slug);
-        let image = post
-            .featured_image
-            .clone()
-            .or_else(|| first_content_image(&post.content));
-        self.posts.insert(
-            0,
-            PostMeta {
-                slug: post.slug.clone(),
-                title: post.title.clone(),
-                excerpt: post.excerpt.clone(),
-                status: post.status.clone(),
-                created_at: post.created_at.clone(),
-                tags: post.tags.clone(),
-                featured_image: image,
-            },
-        );
+        self.posts.insert(0, PostMeta::from_post(post));
     }
 
     pub fn remove(&mut self, slug: &str) {
@@ -115,7 +132,7 @@ pub enum SidebarItem {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SidebarConfig {
     pub items: Vec<SidebarItem>,
 }
@@ -220,6 +237,50 @@ mod tests {
 
         index.remove("test-post");
         assert_eq!(index.posts.len(), 0, "should be empty after remove");
+    }
+
+    fn sample_post(slug: &str, created_at: &str) -> Post {
+        Post {
+            slug: slug.to_string(),
+            title: slug.to_string(),
+            content: "![i](/images/x/a.jpg)".to_string(),
+            excerpt: String::new(),
+            status: PostStatus::Published,
+            created_at: created_at.to_string(),
+            updated_at: "2026-06-01T00:00:00Z".to_string(),
+            tags: vec![],
+            featured_image: None,
+            author: "Admin".to_string(),
+        }
+    }
+
+    #[test]
+    fn index_without_updated_at_still_deserializes() {
+        let json = r#"{"posts":[{"slug":"hello-world","title":"Hello World","excerpt":"",
+            "status":"published","created_at":"2026-05-20T14:30:00Z","tags":[],
+            "featured_image":null}]}"#;
+        let index: PostIndex = serde_json::from_str(json).unwrap();
+        assert!(index.posts[0].updated_at.is_none());
+        assert_eq!(index.posts[0].last_modified(), "2026-05-20T14:30:00Z");
+        let out = serde_json::to_string(&index).unwrap();
+        assert!(!out.contains("updated_at"), "omitted when absent");
+    }
+
+    #[test]
+    fn from_posts_sorts_newest_first_with_updated_at() {
+        let posts = vec![
+            sample_post("old", "2026-01-01T00:00:00Z"),
+            sample_post("new", "2026-03-01T00:00:00Z"),
+            sample_post("mid", "2026-02-01T00:00:00Z"),
+        ];
+        let index = PostIndex::from_posts(&posts);
+        let slugs: Vec<&str> = index.posts.iter().map(|p| p.slug.as_str()).collect();
+        assert_eq!(slugs, ["new", "mid", "old"]);
+        assert_eq!(index.posts[0].last_modified(), "2026-06-01T00:00:00Z");
+        assert_eq!(
+            index.posts[0].featured_image.as_deref(),
+            Some("/images/x/a.jpg")
+        );
     }
 
     #[test]

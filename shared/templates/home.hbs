@@ -1,15 +1,17 @@
 <section class="posts-feed">
 
+  <h1 class="sr-only">Latest posts</h1>
+
   {{#each posts}}
   <article class="post-card">
     {{#if featured_image}}
-    <a href="/post/{{slug}}" class="post-card-featured">
+    <a href="/post/{{slug}}" class="post-card-featured" aria-hidden="true" tabindex="-1">
       <picture>
         <source type="image/webp"
           srcset="{{featured_image}}?width=480&height=220&fit=cover&format=webp 480w,
                   {{featured_image}}?width=800&height=220&fit=cover&format=webp 800w"
           sizes="(max-width: 640px) 100vw, 680px">
-        <img src="{{featured_image}}?width=800&height=220&fit=cover" alt="{{title}}" loading="lazy">
+        <img src="{{featured_image}}?width=800&height=220&fit=cover" alt="" width="800" height="220" {{#if @index}}loading="lazy" decoding="async"{{else}}loading="eager" fetchpriority="high"{{/if}}>
       </picture>
     </a>
     {{/if}}
@@ -32,8 +34,8 @@
           {{/each}}
         </div>
         <a href="/post/{{slug}}" class="read-more">
-          Read
-          <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          Read<span class="sr-only"> {{title}}</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
         </a>
       </div>
     </div>
@@ -41,10 +43,25 @@
   {{/each}}
 
   {{#unless posts}}
-  <div class="empty-state" style="display:block;">
+  <div class="empty-state">
     <div class="empty-state-title">No posts yet</div>
     <div class="empty-state-text">Check back soon for new content.</div>
   </div>
   {{/unless}}
+
+  {{#if pagination.prev_url}}
+  <nav class="pagination" aria-label="Pagination">
+    <a href="{{pagination.prev_url}}" class="prev" rel="prev">&larr; Previous</a>
+    <span class="page-status">Page {{pagination.page}} of {{pagination.total_pages}}</span>
+    {{#if pagination.next_url}}<a href="{{pagination.next_url}}" class="next" rel="next">Next &rarr;</a>{{/if}}
+  </nav>
+  {{else}}
+  {{#if pagination.next_url}}
+  <nav class="pagination" aria-label="Pagination">
+    <span class="page-status">Page {{pagination.page}} of {{pagination.total_pages}}</span>
+    <a href="{{pagination.next_url}}" class="next" rel="next">Next &rarr;</a>
+  </nav>
+  {{/if}}
+  {{/if}}
 
 </section>

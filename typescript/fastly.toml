@@ -11,9 +11,6 @@ build = "npm run build"
     [local_server.kv_stores.content]
       file = "tests/kv-content.json"
       format = "json"
-    [local_server.kv_stores.images]
-      file = "tests/kv-images.json"
-      format = "json"
   [local_server.config_stores]
     [local_server.config_stores.cache_config]
       file = "tests/cache-config.json"
@@ -26,6 +23,5 @@ build = "npm run build"
 [setup]
   [setup.kv_stores]
     [setup.kv_stores.content]
-    [setup.kv_stores.images]
   [setup.secret_stores]
     [setup.secret_stores.secrets]

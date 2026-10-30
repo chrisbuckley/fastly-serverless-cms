@@ -15,6 +15,18 @@ variable "compute_go_package_path" {
   default     = "../go/pkg/edge-cms-go.tar.gz"
 }
 
+variable "go_backend_host" {
+  description = "Hostname of the Go Compute service (e.g. app-go.edge-cms.example.com). Empty (default) = no Go backend on the VCL service; active_backend=go then falls back to Rust."
+  type        = string
+  default     = ""
+}
+
+variable "ts_backend_host" {
+  description = "Hostname of the TypeScript Compute service (e.g. app-ts.edge-cms.example.com). Empty (default) = no TS backend on the VCL service; active_backend=ts then falls back to Rust."
+  type        = string
+  default     = ""
+}
+
 variable "fos_region" {
   description = "Fastly Object Storage region (us-east-1, eu-central-1, ap-southeast-1, etc.)"
   type        = string
@@ -34,9 +46,15 @@ variable "shield_pop" {
 }
 
 variable "logging_endpoint_url" {
-  description = "HTTPS logging drain URL — leave empty to disable"
+  description = "HTTPS logging drain URL — leave empty to disable. Used by the Compute app (endpoint edge-cms-app-logs) and, if enable_vcl_logging, the VCL service."
   type        = string
   default     = ""
+}
+
+variable "enable_vcl_logging" {
+  description = "Also stream VCL CDN request logs to logging_endpoint_url (default off). Entries carry a truncated client IP (/24 IPv4, /48 IPv6) and the URL path only — never the query string."
+  type        = bool
+  default     = false
 }
 
 variable "logging_token" {

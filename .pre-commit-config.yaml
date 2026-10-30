@@ -37,9 +37,16 @@ repos:
         pass_filenames: false
 
       # ── VCL (falco) ──────────────────────────────────────────────────────
-      # Runs on standalone .vcl files. VCL embedded inline in Terraform HCL
-      # is validated by the Fastly provider at apply time. Extract snippets
-      # to .vcl files (loaded via templatefile()) to get pre-commit coverage.
+      # VCL lives inline in terraform/vcl.tf. scripts/lint-vcl.sh extracts each
+      # snippet, wraps it in its subroutine and runs `falco lint` (same as CI).
+      # The standalone .vcl hooks cover any future templatefile()-loaded files.
+      - id: falco-lint-terraform-snippets
+        name: falco lint (terraform/vcl.tf snippets)
+        entry: scripts/lint-vcl.sh terraform/vcl.tf
+        language: script
+        files: ^terraform/vcl\.tf$|^scripts/(extract|lint)-vcl\.sh$
+        pass_filenames: false
+
       - id: falco-fmt
         name: falco fmt
         entry: falco fmt --check
@@ -52,41 +59,67 @@ repos:
         language: system
         files: \.vcl$
 
-      # ── Rust: edge-cms ───────────────────────────────────────────────────
-      # Uses wasm32-wasip1 because the fastly crate only builds for
-      # Compute/WASM — native target fails to compile.
-      - id: rust-fmt-edge-cms
-        name: cargo fmt (edge-cms/rust)
-        entry: bash -c 'cd edge-cms/rust && cargo fmt -- --check'
+      # ── Rust ─────────────────────────────────────────────────────────────
+      # clippy lints for wasm32-wasip1 (the Compute target, same as CI).
+      # Unit tests run on the native host target — the fastly crate compiles
+      # natively, so `cargo test` needs no wasm runner (CI does the same).
+      - id: rust-fmt
+        name: cargo fmt (rust)
+        entry: bash -c 'cd rust && cargo fmt -- --check'
         language: system
-        files: ^edge-cms/rust/.*\.(rs|toml)$
+        files: ^rust/.*\.(rs|toml)$
         pass_filenames: false
 
-      - id: rust-clippy-edge-cms
-        name: cargo clippy (edge-cms/rust)
-        entry: bash -c 'cd edge-cms/rust && cargo clippy --quiet --target wasm32-wasip1 -- -D warnings'
+      - id: rust-clippy
+        name: cargo clippy (rust, wasm32-wasip1)
+        entry: bash -c 'cd rust && cargo clippy --quiet --target wasm32-wasip1 -- -D warnings'
         language: system
-        files: ^edge-cms/rust/.*\.rs$
+        files: ^rust/.*\.rs$
         pass_filenames: false
 
-      # ── Go (future) ──────────────────────────────────────────────────────
-      # - id: go-vet
-      #   name: go vet
-      #   entry: bash -c 'cd <example-dir> && go vet ./...'
-      #   language: system
-      #   files: ^<example-dir>/.*\.go$
-      #   pass_filenames: false
-      #
-      # - id: go-fmt
-      #   name: gofmt
-      #   entry: gofmt -l -e
-      #   language: system
-      #   files: \.go$
-
-      # ── TypeScript: edge-cms ────────────────────────────────────────────
-      - id: ts-check-edge-cms
-        name: tsc --noEmit (edge-cms/typescript)
-        entry: bash -c 'cd edge-cms/typescript && npx tsc --noEmit'
+      - id: rust-test
+        name: cargo test (rust, native)
+        entry: bash -c 'cd rust && cargo test --quiet'
         language: system
-        files: ^edge-cms/typescript/.*\.ts$
+        files: ^rust/.*\.rs$
+        pass_filenames: false
+        stages: [pre-push]
+
+      # ── Go ───────────────────────────────────────────────────────────────
+      # `make copy-shared` stages ../shared into go/shared (untracked) so the
+      # embedded templates/assets resolve for vet, same as `make test`.
+      - id: go-fmt
+        name: gofmt (go)
+        entry: bash -c 'test -z "$(gofmt -l go)" || { gofmt -l go; exit 1; }'
+        language: system
+        files: ^go/.*\.go$
+        pass_filenames: false
+
+      - id: go-vet
+        name: go vet (go, via make)
+        entry: bash -c 'make -C go copy-shared >/dev/null && cd go && go vet ./...'
+        language: system
+        files: ^(go|shared)/.*
+        pass_filenames: false
+
+      # ── TypeScript ───────────────────────────────────────────────────────
+      - id: ts-check
+        name: tsc --noEmit (typescript)
+        entry: bash -c 'cd typescript && npx tsc --noEmit'
+        language: system
+        files: ^typescript/.*\.ts$
+        pass_filenames: false
+
+      # ── Repo scripts ─────────────────────────────────────────────────────
+      - id: shellcheck-scripts
+        name: shellcheck (scripts, hooks, integration suite)
+        entry: shellcheck
+        language: system
+        files: ^(scripts/.*\.sh|\.hooks/.*\.sh|rust/tests/integration\.sh)$
+
+      - id: test-forbid-env-files
+        name: test .hooks/forbid-env-files.sh
+        entry: scripts/test-forbid-env-files.sh
+        language: script
+        files: ^(\.hooks/forbid-env-files\.sh|scripts/test-forbid-env-files\.sh)$
         pass_filenames: false

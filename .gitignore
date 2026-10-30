@@ -24,7 +24,6 @@ __pycache__/
 
 # Terraform
 .terraform/
-.terraform.lock.hcl
 *.tfstate
 *.tfstate.backup
 *.tfvars
@@ -50,3 +49,6 @@ audit-output/
 
 # Claude Code agent worktrees
 .claude/worktrees/
+
+# Local KV backups (contain content data)
+kv-backups/

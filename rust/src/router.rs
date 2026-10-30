@@ -3,7 +3,6 @@ pub enum Route {
     Home,
     Post { slug: String },
     Tag { tag: String },
-    Image { path: String },
     Asset { path: String },
     Feed,
     Sitemap,
@@ -20,10 +19,14 @@ pub enum Route {
     AdminSidebar,
     AdminUpdateSidebar,
     AdminLogout,
+    AdminRebuildIndex,
     NotFound,
 }
 
+/// HEAD is routed exactly like GET (as the TypeScript and Go backends do);
+/// the platform strips the body from HEAD responses.
 pub fn match_route(method: &str, path: &str) -> Route {
+    let method = if method == "HEAD" { "GET" } else { method };
     match (method, path) {
         ("GET", "/api/edge-info") => Route::EdgeInfo,
         ("GET", "/") => Route::Home,
@@ -39,6 +42,7 @@ pub fn match_route(method: &str, path: &str) -> Route {
         ("GET", "/admin/sidebar") => Route::AdminSidebar,
         ("PUT", "/admin/sidebar") => Route::AdminUpdateSidebar,
         ("POST", "/admin/images") => Route::AdminUploadImage,
+        ("POST", "/admin/rebuild-index") => Route::AdminRebuildIndex,
         ("GET", p) => {
             if let Some(slug) = p.strip_prefix("/post/") {
                 Route::Post {
@@ -47,10 +51,6 @@ pub fn match_route(method: &str, path: &str) -> Route {
             } else if let Some(tag) = p.strip_prefix("/tag/") {
                 Route::Tag {
                     tag: tag.to_string(),
-                }
-            } else if let Some(path) = p.strip_prefix("/images/") {
-                Route::Image {
-                    path: path.to_string(),
                 }
             } else if let Some(path) = p.strip_prefix("/assets/") {
                 Route::Asset {
@@ -106,11 +106,31 @@ mod tests {
     }
 
     #[test]
-    fn route_image() {
-        match match_route("GET", "/images/hero.jpg") {
-            Route::Image { path } => assert_eq!(path, "hero.jpg"),
-            other => panic!("expected Image, got {:?}", route_name(&other)),
-        }
+    fn route_images_is_not_handled_by_compute() {
+        assert!(matches!(
+            match_route("GET", "/images/hero.jpg"),
+            Route::NotFound
+        ));
+    }
+
+    #[test]
+    fn route_rebuild_index() {
+        assert!(matches!(
+            match_route("POST", "/admin/rebuild-index"),
+            Route::AdminRebuildIndex
+        ));
+        assert!(matches!(
+            match_route("GET", "/admin/rebuild-index"),
+            Route::NotFound
+        ));
+    }
+
+    #[test]
+    fn route_sidebar_post_removed() {
+        assert!(matches!(
+            match_route("POST", "/admin/sidebar"),
+            Route::NotFound
+        ));
     }
 
     #[test]
@@ -225,6 +245,36 @@ mod tests {
     }
 
     #[test]
+    fn route_head_matches_get() {
+        assert!(matches!(match_route("HEAD", "/"), Route::Home));
+        assert!(matches!(match_route("HEAD", "/feed.xml"), Route::Feed));
+        assert!(matches!(
+            match_route("HEAD", "/api/edge-info"),
+            Route::EdgeInfo
+        ));
+        match match_route("HEAD", "/post/hello-world") {
+            Route::Post { slug } => assert_eq!(slug, "hello-world"),
+            other => panic!("expected Post, got {:?}", route_name(&other)),
+        }
+        match match_route("HEAD", "/assets/style.css") {
+            Route::Asset { path } => assert_eq!(path, "style.css"),
+            other => panic!("expected Asset, got {:?}", route_name(&other)),
+        }
+        assert!(matches!(
+            match_route("HEAD", "/admin/login"),
+            Route::AdminLogin
+        ));
+        assert!(matches!(
+            match_route("HEAD", "/nonexistent"),
+            Route::NotFound
+        ));
+        assert!(matches!(
+            match_route("HEAD", "/admin/posts/foo"),
+            Route::NotFound
+        ));
+    }
+
+    #[test]
     fn route_not_found() {
         assert!(matches!(
             match_route("GET", "/nonexistent"),
@@ -247,7 +297,6 @@ mod tests {
             Route::Home => "Home",
             Route::Post { .. } => "Post",
             Route::Tag { .. } => "Tag",
-            Route::Image { .. } => "Image",
             Route::Asset { .. } => "Asset",
             Route::Feed => "Feed",
             Route::Sitemap => "Sitemap",
@@ -264,6 +313,7 @@ mod tests {
             Route::AdminSidebar => "AdminSidebar",
             Route::AdminUpdateSidebar => "AdminUpdateSidebar",
             Route::AdminLogout => "AdminLogout",
+            Route::AdminRebuildIndex => "AdminRebuildIndex",
             Route::EdgeInfo => "EdgeInfo",
             Route::NotFound => "NotFound",
         }

@@ -1,35 +1,37 @@
-import { ConfigStore } from "fastly:config-store";
 import { SecretStore } from "fastly:secret-store";
 
-export function ttlFromConfig(key: string): number {
-  const store = new ConfigStore("cache_config");
-  const val = store.get(key);
-  if (val === null) return 3600;
-  const parsed = parseInt(val, 10);
-  return isNaN(parsed) ? 3600 : parsed;
-}
+import { assetTtl, pageTtl } from "./config.js";
+import { clip, logLine, describeError } from "./logging.js";
 
-function cacheHeaders(ttlKey: string, keys: string[]): Headers {
-  const ttl = ttlFromConfig(ttlKey);
+function surrogate(ttl: number, keys: string[]): Headers {
   const headers = new Headers();
-  headers.set("Surrogate-Control", `max-age=${ttl}`);
-  headers.set("Cache-Control", `max-age=${ttl}, public`);
-  if (keys.length > 0) {
-    headers.set("Surrogate-Key", keys.join(" "));
-  }
+  headers.set(
+    "Surrogate-Control",
+    `max-age=${ttl}, stale-while-revalidate=60, stale-if-error=86400`,
+  );
+  if (keys.length > 0) headers.set("Surrogate-Key", keys.join(" "));
   return headers;
 }
 
 export function pageHeaders(keys: string[]): Headers {
-  return cacheHeaders("page_ttl", keys);
+  const headers = surrogate(pageTtl(), keys);
+  headers.set("Cache-Control", `max-age=${pageTtl()}, public`);
+  return headers;
+}
+
+export function feedHeaders(keys: string[]): Headers {
+  const headers = surrogate(pageTtl(), keys);
+  headers.set("Cache-Control", "public, max-age=300");
+  return headers;
 }
 
 export function assetHeaders(keys: string[]): Headers {
-  return cacheHeaders("asset_ttl", keys);
-}
-
-export function imageHeaders(keys: string[]): Headers {
-  return cacheHeaders("image_ttl", keys);
+  const ttl = assetTtl();
+  const headers = new Headers();
+  headers.set("Surrogate-Control", `max-age=${ttl}`);
+  headers.set("Cache-Control", "public, max-age=31536000, immutable");
+  if (keys.length > 0) headers.set("Surrogate-Key", keys.join(" "));
+  return headers;
 }
 
 export function noCacheHeaders(): Headers {
@@ -38,36 +40,38 @@ export function noCacheHeaders(): Headers {
   return headers;
 }
 
-export async function purgeKeys(keys: string[]): Promise<void> {
+export async function purgeKeys(keys: string[]): Promise<boolean> {
   try {
     const secrets = new SecretStore("secrets");
 
     const tokenEntry = await secrets.get("fastly_api_token");
-    if (!tokenEntry) {
-      console.error("purge error: missing secret: fastly_api_token");
-      return;
-    }
-    const apiToken = tokenEntry.plaintext();
-
     const sidEntry = await secrets.get("purge_service_id");
-    if (!sidEntry) {
-      console.error("purge error: missing secret: purge_service_id");
-      return;
+    if (!tokenEntry || !sidEntry) {
+      logLine("error", "purge skipped: missing purge secrets");
+      return false;
     }
-    const serviceId = sidEntry.plaintext();
 
-    const url = `https://api.fastly.com/service/${serviceId}/purge`;
-
-    await fetch(url, {
-      method: "POST",
-      headers: {
-        "Fastly-Key": apiToken,
-        "Surrogate-Key": keys.join(" "),
-        "Fastly-Soft-Purge": "1",
+    const resp = await fetch(
+      `https://api.fastly.com/service/${sidEntry.plaintext()}/purge`,
+      {
+        method: "POST",
+        headers: {
+          "Fastly-Key": tokenEntry.plaintext(),
+          "Surrogate-Key": keys.join(" "),
+          "Fastly-Soft-Purge": "1",
+        },
+        backend: "fastly-api",
       },
-      backend: "fastly-api",
-    });
+    );
+
+    if (!resp.ok) {
+      const body = clip(await resp.text());
+      logLine("error", `purge failed: status=${resp.status} body=${body}`);
+      return false;
+    }
+    return true;
   } catch (e) {
-    console.error(`purge error: ${e}`);
+    logLine("error", `purge error: ${describeError(e)}`);
+    return false;
   }
 }

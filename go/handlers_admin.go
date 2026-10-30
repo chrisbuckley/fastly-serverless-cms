@@ -3,66 +3,183 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/fastly/compute-sdk-go/erl"
 	"github.com/fastly/compute-sdk-go/fsthttp"
-	"github.com/fastly/compute-sdk-go/kvstore"
 	"github.com/fastly/compute-sdk-go/secretstore"
 )
 
-// requireAuth checks the session cookie and verifies the HMAC token.
-// Returns nil on success, or an error describing the failure.
-func requireAuth(r *fsthttp.Request) error {
-	cookieHeader := r.Header.Get("Cookie")
-	token := ExtractCookie(cookieHeader, "session")
-	if token == "" {
-		return fmt.Errorf("expired")
-	}
+const (
+	loginMaxAttempts  = 5
+	loginPenaltyTTL   = 15 * time.Minute
+	loginRetryAfter   = "900"
+	minRevocationTTL  = 60
+	adminHome         = "/admin"
+	authReasonExpired = "expired"
+	authReasonInvalid = "invalid"
+	authReasonError   = "error"
+)
 
+// authError describes why a request is not authenticated; its message is the
+// reason code shown on the login page.
+type authError struct{ reason string }
+
+func (e *authError) Error() string { return e.reason }
+
+// requireAuth verifies the session cookie, its HMAC and that the session has
+// not been revoked by a logout.
+func requireAuth(r *fsthttp.Request) error {
+	token := ExtractCookie(r.Header.Get("Cookie"), "session")
+	if token == "" {
+		return &authError{authReasonExpired}
+	}
 	hmacKey, err := secretstore.Plaintext("secrets", "hmac_key")
 	if err != nil {
-		return fmt.Errorf("error")
+		logErrorf("auth: read hmac_key: %v", err)
+		return &authError{authReasonError}
 	}
-
-	err = VerifySessionToken(hmacKey, token)
+	session, err := ParseSessionToken(hmacKey, token)
 	if err != nil {
-		if err == ErrSessionExpired {
-			return fmt.Errorf("expired")
+		if errors.Is(err, ErrSessionExpired) {
+			return &authError{authReasonExpired}
 		}
-		return fmt.Errorf("invalid")
+		return &authError{authReasonInvalid}
+	}
+	store, err := openContent()
+	if err != nil {
+		logErrorf("auth: %v", err)
+		return &authError{authReasonError}
+	}
+	_, revoked, err := kvGet(store, RevocationKey(session.Nonce))
+	if err != nil {
+		logErrorf("auth: %v", err)
+		return &authError{authReasonError}
+	}
+	if revoked {
+		return &authError{authReasonInvalid}
 	}
 	return nil
 }
 
 // redirectToLogin sends a 302 redirect to the login page with an error reason.
 func redirectToLogin(w fsthttp.ResponseWriter, reason string) {
-	w.Header().Set("Location", "/admin/login?error="+reason)
+	noCache(w)
+	w.Header().Set("Location", "/admin/login?error="+url.QueryEscape(reason))
 	w.WriteHeader(fsthttp.StatusFound)
 }
 
-// parseFormBody parses a URL-encoded form body into a key-value map.
+func redirectTo(w fsthttp.ResponseWriter, location string) {
+	noCache(w)
+	w.Header().Set("Location", location)
+	w.WriteHeader(fsthttp.StatusFound)
+}
+
+// authorize returns true when the request is authenticated; otherwise it
+// writes the appropriate response (login redirect, or 401 JSON for API calls).
+func authorize(w fsthttp.ResponseWriter, r *fsthttp.Request, apiCall bool) bool {
+	err := requireAuth(r)
+	if err == nil {
+		return true
+	}
+	if apiCall {
+		writeJSONError(w, fsthttp.StatusUnauthorized, "unauthorized")
+	} else {
+		redirectToLogin(w, err.Error())
+	}
+	return false
+}
+
+// readLimitedBody reads at most limit bytes, checking Content-Length first.
+func readLimitedBody(r *fsthttp.Request, limit int64) ([]byte, error) {
+	if cl := r.Header.Get("Content-Length"); cl != "" {
+		if n, err := strconv.ParseInt(cl, 10, 64); err == nil && n > limit {
+			return nil, errBodyTooLarge
+		}
+	}
+	if r.Body == nil {
+		return nil, nil
+	}
+	b, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > limit {
+		return nil, errBodyTooLarge
+	}
+	return b, nil
+}
+
+// parseFormBody parses a URL-encoded form body. Decoding never fails: a value
+// or key with malformed escapes is kept raw.
 func parseFormBody(body string) map[string]string {
 	result := make(map[string]string)
-	pairs := strings.Split(body, "&")
-	for _, pair := range pairs {
-		parts := strings.SplitN(pair, "=", 2)
-		if len(parts) != 2 {
+	for _, pair := range strings.Split(body, "&") {
+		if pair == "" {
 			continue
 		}
-		key := parts[0]
-		value := strings.ReplaceAll(parts[1], "+", " ")
-		decoded, err := url.QueryUnescape(value)
-		if err != nil {
-			decoded = value
+		parts := strings.SplitN(pair, "=", 2)
+		key := decodeFormComponent(parts[0])
+		value := ""
+		if len(parts) == 2 {
+			value = decodeFormComponent(parts[1])
 		}
-		result[key] = decoded
+		result[key] = value
 	}
 	return result
+}
+
+func decodeFormComponent(s string) string {
+	decoded, err := url.QueryUnescape(s)
+	if err != nil {
+		return s
+	}
+	return decoded
+}
+
+// parseFields extracts post fields from a form or JSON body. Absent keys are
+// absent from the result, which lets updates distinguish omitted from empty.
+func parseFields(contentType string, body []byte) (map[string]string, error) {
+	if !strings.Contains(strings.ToLower(contentType), "application/json") {
+		return parseFormBody(string(body)), nil
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, badRequest("invalid JSON")
+	}
+	fields := make(map[string]string, len(raw))
+	for k, v := range raw {
+		switch val := v.(type) {
+		case string:
+			fields[k] = val
+		case []interface{}:
+			parts := make([]string, 0, len(val))
+			for _, item := range val {
+				if s, ok := item.(string); ok {
+					parts = append(parts, s)
+				}
+			}
+			fields[k] = strings.Join(parts, ",")
+		case nil:
+			fields[k] = ""
+		}
+	}
+	return fields, nil
+}
+
+// wantsJSON reports whether the caller expects a JSON error response.
+func wantsJSON(r *fsthttp.Request) bool {
+	if strings.Contains(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
+		return true
+	}
+	accept := r.Header.Get("Accept")
+	return strings.Contains(accept, "application/json") && !strings.Contains(accept, "text/html")
 }
 
 // nowISO8601 returns the current UTC time in ISO 8601 format.
@@ -79,665 +196,779 @@ func readSecret(name string) (string, error) {
 	return string(val), nil
 }
 
-// handleLoginPage renders the login page with optional error message.
-func handleLoginPage(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
-	errorParam := r.URL.Query().Get("error")
-	var errorMessage string
-	switch errorParam {
+func loginErrorMessage(code string) interface{} {
+	switch code {
 	case "invalid":
-		errorMessage = "Invalid password. Please try again."
+		return "Invalid password. Please try again."
 	case "expired":
-		errorMessage = "Session expired. Please log in again."
+		return "Session expired. Please log in again."
 	case "error":
-		errorMessage = "An error occurred. Please try again."
+		return "An error occurred. Please try again."
 	}
+	return nil
+}
 
-	data := map[string]interface{}{
-		"error_message": errorMessage,
-	}
+// handleLoginPage renders the login page with an optional error message.
+func handleLoginPage(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
+	cfg := loadConfig(r.Host)
+	data := layoutVars(cfg, "/admin/login", "Login", "edge/cms administration login")
+	data["noindex"] = true
+	data["error"] = loginErrorMessage(r.URL.Query().Get("error"))
 
 	html, err := renderTemplate("login", data)
 	if err != nil {
-		handleInternalError(w)
+		logErrorf("render login: %v", err)
+		handleInternalError(w, r)
 		return
 	}
 	noCache(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(fsthttp.StatusOK)
 	w.Write([]byte(html))
+}
+
+// loginOverLimit reports whether count exceeds the allowed attempts per window.
+func loginOverLimit(count uint32) bool { return count > loginMaxAttempts }
+
+// loginRateLimited applies the in-Compute login limiter (contract section 4).
+// Limiter failures are logged and fail open so a platform fault cannot lock the
+// administrator out; the VCL layer still rate limits.
+func loginRateLimited(ip string) bool {
+	box := erl.OpenPenaltyBox("login_penalty")
+	counter := erl.OpenRateCounter("login_attempts")
+	if in, err := box.Has(ip); err == nil && in {
+		return true
+	}
+	if err := counter.Increment(ip, 1); err != nil {
+		logErrorf("login limiter increment: %v", err)
+		return false
+	}
+	count, err := counter.LookupCount(ip, erl.CounterDuration60s)
+	if err != nil {
+		logErrorf("login limiter lookup: %v", err)
+		return false
+	}
+	if !loginOverLimit(count) {
+		return false
+	}
+	if err := box.Add(ip, loginPenaltyTTL); err != nil {
+		logErrorf("login limiter penalty: %v", err)
+	}
+	return true
+}
+
+func writeTooManyAttempts(w fsthttp.ResponseWriter) {
+	w.Header().Set("Retry-After", loginRetryAfter)
+	writeText(w, fsthttp.StatusTooManyRequests, "Too many login attempts\n")
 }
 
 // handleLoginSubmit processes login form submission.
 func handleLoginSubmit(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		redirectToLogin(w, "error")
+	if loginRateLimited(rateLimitKey(clientIP(r))) {
+		writeTooManyAttempts(w)
 		return
 	}
-	form := parseFormBody(string(bodyBytes))
-	password := form["password"]
+	body, err := readLimitedBody(r, maxFormBodyBytes)
+	if errors.Is(err, errBodyTooLarge) {
+		writeText(w, fsthttp.StatusRequestEntityTooLarge, "Payload too large\n")
+		return
+	}
+	if err != nil {
+		redirectToLogin(w, authReasonError)
+		return
+	}
+	password := parseFormBody(string(body))["password"]
 
 	adminHash, err := readSecret("admin_password")
 	if err != nil {
-		log.Printf("[auth] failed to read admin_password secret: %v", err)
-		redirectToLogin(w, "error")
+		logErrorf("auth: read admin_password: %v", err)
+		redirectToLogin(w, authReasonError)
 		return
 	}
-
 	if err := VerifyPassword(password, adminHash); err != nil {
-		clientIP := r.Header.Get("Fastly-Client-IP")
-		if clientIP == "" {
-			clientIP = r.RemoteAddr
-		}
-		log.Printf("[auth] login failed ip=%s", clientIP)
-		redirectToLogin(w, "invalid")
+		redirectToLogin(w, authReasonInvalid)
 		return
 	}
-
 	hmacKey, err := secretstore.Plaintext("secrets", "hmac_key")
 	if err != nil {
-		log.Printf("[auth] failed to read hmac_key secret: %v", err)
-		redirectToLogin(w, "error")
+		logErrorf("auth: read hmac_key: %v", err)
+		redirectToLogin(w, authReasonError)
 		return
 	}
-
-	token := CreateSessionToken(hmacKey, 3600)
+	token, err := CreateSessionToken(hmacKey, sessionTTL)
+	if err != nil {
+		logErrorf("auth: %v", err)
+		redirectToLogin(w, authReasonError)
+		return
+	}
 	w.Header().Set("Set-Cookie", SessionCookie(token))
-	w.Header().Set("Location", "/admin")
-	w.WriteHeader(fsthttp.StatusFound)
+	redirectTo(w, adminHome)
 }
 
-// handleLogout clears the session cookie and redirects to home.
+// handleLogout revokes the session nonce, clears the cookie and redirects home.
 func handleLogout(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
+	if token := ExtractCookie(r.Header.Get("Cookie"), "session"); token != "" {
+		if hmacKey, err := secretstore.Plaintext("secrets", "hmac_key"); err == nil {
+			if session, err := ParseSessionToken(hmacKey, token); err == nil {
+				if err := revokeSession(session); err != nil {
+					logErrorf("logout: %v", err)
+					handleInternalError(w, r)
+					return
+				}
+			}
+		}
+	}
 	w.Header().Set("Set-Cookie", ClearSessionCookie())
-	w.Header().Set("Location", "/")
-	w.WriteHeader(fsthttp.StatusFound)
+	redirectTo(w, "/")
+}
+
+// revokeSession records the nonce as revoked until the token would expire.
+func revokeSession(s Session) error {
+	store, err := openContent()
+	if err != nil {
+		return err
+	}
+	remaining := s.Expires - time.Now().Unix()
+	if remaining < minRevocationTTL {
+		remaining = minRevocationTTL
+	}
+	return kvPut(store, RevocationKey(s.Nonce), strconv.FormatInt(s.Expires, 10), uint32(remaining))
 }
 
 // handleDashboard renders the admin dashboard with post listings.
 func handleDashboard(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
-	if err := requireAuth(r); err != nil {
-		redirectToLogin(w, err.Error())
+	if !authorize(w, r, false) {
 		return
 	}
-
+	cfg := loadConfig(r.Host)
 	index, err := readIndex()
 	if err != nil {
-		handleInternalError(w)
+		logErrorf("dashboard: %v", err)
+		handleInternalError(w, r)
 		return
 	}
+	publishedCount := len(index.Published())
 
-	publishedCount := 0
-	draftCount := 0
-	for _, p := range index.Posts {
-		if p.Status == StatusPublished {
-			publishedCount++
-		} else {
-			draftCount++
-		}
-	}
+	data := adminVars(cfg, adminHome, "Dashboard")
+	data["posts"] = postMetaView(index.Posts)
+	data["total_posts"] = len(index.Posts)
+	data["published_count"] = publishedCount
+	data["draft_count"] = len(index.Posts) - publishedCount
+	data["purge_failed"] = r.URL.Query().Get("purge") == "failed"
+	writeAdminPage(w, r, fsthttp.StatusOK, "admin-dashboard", data)
+}
 
-	data := map[string]interface{}{
-		"is_admin":        true,
-		"posts":           index.Posts,
-		"total_posts":     len(index.Posts),
-		"published_count": publishedCount,
-		"draft_count":     draftCount,
-		"page_title":      "Dashboard",
-	}
-
-	html, err := renderPage("admin-dashboard", data)
+// writeAdminPage renders an uncacheable admin page with the given status.
+func writeAdminPage(w fsthttp.ResponseWriter, r *fsthttp.Request, status int, name string, data map[string]interface{}) {
+	html, err := renderPage(name, data)
 	if err != nil {
-		handleInternalError(w)
+		logErrorf("render %s: %v", name, err)
+		handleInternalError(w, r)
 		return
 	}
 	noCache(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(fsthttp.StatusOK)
+	w.WriteHeader(status)
 	w.Write([]byte(html))
+}
+
+// renderEditor renders the post editor, optionally with an error message.
+func renderEditor(w fsthttp.ResponseWriter, r *fsthttp.Request, status int, post Post, isNew bool, message string) {
+	cfg := loadConfig(r.Host)
+	title := "New Post"
+	path := "/admin/posts/new"
+	if !isNew {
+		title = "Edit Post"
+		path = "/admin/posts/" + post.Slug + "/edit"
+	}
+	data := adminVars(cfg, path, title)
+	data["post"] = editorPost(post)
+	data["is_new"] = isNew
+	data["editing"] = !isNew
+	if message == "" {
+		data["error"] = nil
+	} else {
+		data["error"] = message
+	}
+	writeAdminPage(w, r, status, "admin-editor", data)
 }
 
 // handleNewPost renders the editor for creating a new post.
 func handleNewPost(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
-	if err := requireAuth(r); err != nil {
-		redirectToLogin(w, err.Error())
+	if !authorize(w, r, false) {
 		return
 	}
-
-	data := map[string]interface{}{
-		"is_admin":   true,
-		"editing":    false,
-		"page_title": "New Post",
-	}
-	html, err := renderPage("admin-editor", data)
-	if err != nil {
-		handleInternalError(w)
-		return
-	}
-	noCache(w)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(fsthttp.StatusOK)
-	w.Write([]byte(html))
+	renderEditor(w, r, fsthttp.StatusOK, Post{Status: StatusDraft, Tags: []string{}}, true, "")
 }
 
-// handleCreatePost creates a new post from form submission.
-func handleCreatePost(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
-	if err := requireAuth(r); err != nil {
-		redirectToLogin(w, err.Error())
+// postFailure reports a validation or conflict error to either an HTML form
+// (re-rendering the editor) or a JSON caller.
+func postFailure(w fsthttp.ResponseWriter, r *fsthttp.Request, status int, message string, post Post, isNew bool) {
+	if wantsJSON(r) {
+		writeJSONError(w, status, message)
 		return
 	}
+	renderEditor(w, r, status, post, isNew, message)
+}
 
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		handleInternalError(w)
-		return
+func failureStatus(err error) (int, string) {
+	var ve *ValidationError
+	if errors.As(err, &ve) {
+		return ve.Status, ve.Message
 	}
-	form := parseFormBody(string(bodyBytes))
+	return fsthttp.StatusBadRequest, err.Error()
+}
 
-	now := nowISO8601()
-	tags := parseTags(form["tags"])
-	var featuredImage *string
-	if fi := form["featured_image"]; fi != "" {
-		featuredImage = &fi
-	}
-
-	status := PostStatus(form["status"])
-	if status != StatusPublished && status != StatusDraft {
-		status = StatusDraft
-	}
-
+// draftFromFields builds a best-effort Post from submitted fields so a failed
+// form can be redisplayed with the user's input.
+func draftFromFields(fields map[string]string, slug string) Post {
 	post := Post{
-		Slug:          form["slug"],
-		Title:         form["title"],
-		Content:       form["content"],
-		Excerpt:       form["excerpt"],
-		Status:        status,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-		Tags:          tags,
-		FeaturedImage: featuredImage,
-		Author:        "Admin",
+		Slug:    slug,
+		Title:   fields["title"],
+		Content: fields["content"],
+		Excerpt: fields["excerpt"],
+		Status:  PostStatus(fields["status"]),
+		Tags:    ParseTags(fields["tags"]),
 	}
+	post.FeaturedImage = CleanFeaturedImage(fields["featured_image"])
+	if post.Status != StatusPublished {
+		post.Status = StatusDraft
+	}
+	return post
+}
 
-	postJSON, err := json.Marshal(&post)
+// readPostFields reads and parses a form/JSON post body. On failure it has
+// already written the response and returns ok=false.
+func readPostFields(w fsthttp.ResponseWriter, r *fsthttp.Request, blank Post, isNew bool) (map[string]string, bool) {
+	body, err := readLimitedBody(r, maxFormBodyBytes)
+	if errors.Is(err, errBodyTooLarge) {
+		postFailure(w, r, fsthttp.StatusRequestEntityTooLarge, "Request body is too large", blank, isNew)
+		return nil, false
+	}
 	if err != nil {
-		handleInternalError(w)
-		return
+		logErrorf("read body: %v", err)
+		handleInternalError(w, r)
+		return nil, false
 	}
-
-	store, err := kvstore.Open("content")
+	fields, err := parseFields(r.Header.Get("Content-Type"), body)
 	if err != nil {
-		handleInternalError(w)
+		status, msg := failureStatus(err)
+		postFailure(w, r, status, msg, blank, isNew)
+		return nil, false
+	}
+	return fields, true
+}
+
+// handleCreatePost creates a new post from form or JSON submission.
+func handleCreatePost(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
+	if !authorize(w, r, wantsJSON(r)) {
 		return
 	}
-
-	if err := store.Insert("post:"+post.Slug, strings.NewReader(string(postJSON))); err != nil {
-		handleInternalError(w)
+	fields, ok := readPostFields(w, r, Post{Status: StatusDraft, Tags: []string{}}, true)
+	if !ok {
 		return
 	}
+	draft := draftFromFields(fields, fields["slug"])
 
-	// Update index
-	index, err := readIndex()
+	post, err := buildNewPost(fields)
 	if err != nil {
-		handleInternalError(w)
+		status, msg := failureStatus(err)
+		postFailure(w, r, status, msg, draft, true)
 		return
 	}
-	index.Add(&post)
-	indexJSON, err := json.Marshal(&index)
+
+	store, err := openContent()
 	if err != nil {
-		handleInternalError(w)
+		logErrorf("create: %v", err)
+		handleInternalError(w, r)
 		return
 	}
-	if err := store.Insert("_index", strings.NewReader(string(indexJSON))); err != nil {
-		handleInternalError(w)
+	_, exists, err := kvGet(store, "post:"+post.Slug)
+	if err != nil {
+		logErrorf("create: %v", err)
+		handleInternalError(w, r)
 		return
 	}
+	if exists {
+		postFailure(w, r, fsthttp.StatusConflict, "A post with that slug already exists", draft, true)
+		return
+	}
+	if err := writePost(store, &post); err != nil {
+		logErrorf("create: %v", err)
+		handleInternalError(w, r)
+		return
+	}
+	if err := updateIndex(store, func(idx *PostIndex) { idx.Add(&post) }); err != nil {
+		logErrorf("create: %v", err)
+		handleInternalError(w, r)
+		return
+	}
+	purged := purgeKeys(ctx, postPurgeKeys(post.Slug, post.Tags))
+	redirectTo(w, withPurgeFlag(adminHome, purged))
+}
 
-	purgeKeys([]string{"post-index"})
+// buildNewPost validates submitted fields for a new post.
+func buildNewPost(fields map[string]string) (Post, error) {
+	slug := fields["slug"]
+	if !ValidSlug(slug) {
+		return Post{}, badRequest("invalid slug: use lowercase letters, digits and hyphens")
+	}
+	title, err := ValidateTitle(fields["title"])
+	if err != nil {
+		return Post{}, err
+	}
+	if err := ValidateExcerpt(fields["excerpt"]); err != nil {
+		return Post{}, err
+	}
+	if err := ValidateContent(fields["content"]); err != nil {
+		return Post{}, err
+	}
+	status, err := ParseStatus(fields["status"], StatusDraft)
+	if err != nil {
+		return Post{}, err
+	}
+	now := nowISO8601()
+	post := Post{
+		Slug:      slug,
+		Title:     title,
+		Content:   fields["content"],
+		Excerpt:   fields["excerpt"],
+		Status:    status,
+		CreatedAt: now,
+		UpdatedAt: now,
+		Tags:      ParseTags(fields["tags"]),
+		Author:    "Admin",
+	}
+	post.FeaturedImage = CleanFeaturedImage(fields["featured_image"])
+	return post, nil
+}
 
-	w.Header().Set("Location", "/admin")
-	w.WriteHeader(fsthttp.StatusFound)
+// mergePostUpdate applies submitted fields to an existing post. Omitted fields,
+// and empty title/content/slug/status, keep their existing values.
+func mergePostUpdate(old Post, fields map[string]string, now string) (Post, error) {
+	updated := old
+	updated.UpdatedAt = now
+
+	if slug := fields["slug"]; slug != "" {
+		if !ValidSlug(slug) {
+			return Post{}, badRequest("invalid slug: use lowercase letters, digits and hyphens")
+		}
+		updated.Slug = slug
+	}
+	if title, ok := fields["title"]; ok && strings.TrimSpace(title) != "" {
+		validTitle, err := ValidateTitle(title)
+		if err != nil {
+			return Post{}, err
+		}
+		updated.Title = validTitle
+	}
+	if excerpt, ok := fields["excerpt"]; ok {
+		if err := ValidateExcerpt(excerpt); err != nil {
+			return Post{}, err
+		}
+		updated.Excerpt = excerpt
+	}
+	if content, ok := fields["content"]; ok && content != "" {
+		if err := ValidateContent(content); err != nil {
+			return Post{}, err
+		}
+		updated.Content = content
+	}
+	if raw, ok := fields["status"]; ok {
+		if raw == "" {
+			return Post{}, badRequest("status must be published or draft")
+		}
+		status, err := ParseStatus(raw, old.Status)
+		if err != nil {
+			return Post{}, err
+		}
+		updated.Status = status
+	}
+	if tags, ok := fields["tags"]; ok {
+		updated.Tags = ParseTags(tags)
+	}
+	if fi, ok := fields["featured_image"]; ok {
+		updated.FeaturedImage = CleanFeaturedImage(fi)
+	}
+	return updated, nil
 }
 
 // handleEditPost renders the editor for an existing post.
 func handleEditPost(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request, slug string) {
-	if err := requireAuth(r); err != nil {
-		redirectToLogin(w, err.Error())
+	if !authorize(w, r, false) {
 		return
 	}
-
-	store, err := kvstore.Open("content")
+	if !ValidSlug(slug) {
+		handleNotFound(w, r)
+		return
+	}
+	store, err := openContent()
 	if err != nil {
-		handleInternalError(w)
+		logErrorf("edit: %v", err)
+		handleInternalError(w, r)
 		return
 	}
-	entry, err := store.Lookup("post:" + slug)
+	post, found, err := readPost(store, slug)
 	if err != nil {
-		handleNotFound(w)
+		logErrorf("edit %s: %v", slug, err)
+		handleInternalError(w, r)
 		return
 	}
-
-	var post Post
-	if err := json.Unmarshal([]byte(entry.String()), &post); err != nil {
-		handleInternalError(w)
+	if !found {
+		handleNotFound(w, r)
 		return
 	}
-
-	tagsStr := strings.Join(post.Tags, ", ")
-
-	data := map[string]interface{}{
-		"is_admin":       true,
-		"editing":        true,
-		"slug":           post.Slug,
-		"title":          post.Title,
-		"content":        post.Content,
-		"excerpt":        post.Excerpt,
-		"status":         string(post.Status),
-		"tags":           tagsStr,
-		"featured_image": post.FeaturedImage,
-		"author":         post.Author,
-		"created_at":     post.CreatedAt,
-		"page_title":     "Edit: " + post.Title,
-	}
-
-	html, err := renderPage("admin-editor", data)
-	if err != nil {
-		handleInternalError(w)
-		return
-	}
-	noCache(w)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(fsthttp.StatusOK)
-	w.Write([]byte(html))
+	renderEditor(w, r, fsthttp.StatusOK, post, false, "")
 }
 
-// handleUpdatePost updates an existing post from form submission.
+// handleUpdatePost updates an existing post, keeping existing values for
+// omitted fields, and keeps revisions of the previous content.
 func handleUpdatePost(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request, slug string) {
-	if err := requireAuth(r); err != nil {
-		redirectToLogin(w, err.Error())
+	if !authorize(w, r, wantsJSON(r)) {
 		return
 	}
-
-	// Read old post to preserve created_at and author
-	store, err := kvstore.Open("content")
+	if !ValidSlug(slug) {
+		handleNotFound(w, r)
+		return
+	}
+	store, err := openContent()
 	if err != nil {
-		handleInternalError(w)
+		logErrorf("update: %v", err)
+		handleInternalError(w, r)
 		return
 	}
-	entry, err := store.Lookup("post:" + slug)
+	oldPost, found, err := readPost(store, slug)
 	if err != nil {
-		handleNotFound(w)
+		logErrorf("update %s: %v", slug, err)
+		handleInternalError(w, r)
 		return
 	}
-	var oldPost Post
-	if err := json.Unmarshal([]byte(entry.String()), &oldPost); err != nil {
-		handleInternalError(w)
+	if !found {
+		handleNotFound(w, r)
 		return
 	}
+	fields, ok := readPostFields(w, r, oldPost, false)
+	if !ok {
+		return
+	}
+	draft := draftFromFields(fields, slug)
 
-	bodyBytes, err := io.ReadAll(r.Body)
+	updated, err := mergePostUpdate(oldPost, fields, nowISO8601())
 	if err != nil {
-		handleInternalError(w)
+		status, msg := failureStatus(err)
+		postFailure(w, r, status, msg, draft, false)
 		return
 	}
-	form := parseFormBody(string(bodyBytes))
-
-	tags := parseTags(form["tags"])
-	var featuredImage *string
-	if fi := form["featured_image"]; fi != "" {
-		featuredImage = &fi
-	}
-
-	status := PostStatus(form["status"])
-	if status != StatusPublished && status != StatusDraft {
-		status = oldPost.Status
-	}
-
-	newSlug := form["slug"]
-	if newSlug == "" {
-		newSlug = slug
-	}
-
-	updatedPost := Post{
-		Slug:          newSlug,
-		Title:         form["title"],
-		Content:       form["content"],
-		Excerpt:       form["excerpt"],
-		Status:        status,
-		CreatedAt:     oldPost.CreatedAt,
-		UpdatedAt:     nowISO8601(),
-		Tags:          tags,
-		FeaturedImage: featuredImage,
-		Author:        oldPost.Author,
-	}
-
-	postJSON, err := json.Marshal(&updatedPost)
-	if err != nil {
-		handleInternalError(w)
-		return
-	}
-
-	// Write new key
-	if err := store.Insert("post:"+newSlug, strings.NewReader(string(postJSON))); err != nil {
-		handleInternalError(w)
-		return
-	}
-
-	// Delete old key if slug changed
-	if newSlug != slug {
-		if err := store.Delete("post:" + slug); err != nil {
-			log.Printf("[update] failed to delete old key post:%s: %v", slug, err)
+	renamed := updated.Slug != slug
+	if renamed {
+		_, exists, err := kvGet(store, "post:"+updated.Slug)
+		if err != nil {
+			logErrorf("update %s: %v", slug, err)
+			handleInternalError(w, r)
+			return
+		}
+		if exists {
+			postFailure(w, r, fsthttp.StatusConflict, "A post with that slug already exists", draft, false)
+			return
 		}
 	}
 
-	// Update index
-	index, err := readIndex()
+	oldJSON, err := json.Marshal(&oldPost)
 	if err != nil {
-		handleInternalError(w)
+		logErrorf("update %s: %v", slug, err)
+		handleInternalError(w, r)
 		return
 	}
-	if newSlug != slug {
-		index.Remove(slug)
+	steps := []func() error{
+		func() error { return kvPut(store, revisionKey(slug, time.Now()), string(oldJSON), retentionTTLSeconds) },
+		func() error { return writePost(store, &updated) },
+		func() error {
+			return updateIndex(store, func(idx *PostIndex) {
+				if renamed {
+					idx.Remove(slug)
+				}
+				idx.Add(&updated)
+			})
+		},
 	}
-	index.Add(&updatedPost)
-	indexJSON, err := json.Marshal(&index)
-	if err != nil {
-		handleInternalError(w)
-		return
+	if renamed {
+		steps = append(steps, func() error {
+			if err := store.Delete("post:" + slug); err != nil {
+				return fmt.Errorf("delete post:%s: %w", slug, err)
+			}
+			return nil
+		})
 	}
-	if err := store.Insert("_index", strings.NewReader(string(indexJSON))); err != nil {
-		handleInternalError(w)
-		return
+	for _, step := range steps {
+		if err := step(); err != nil {
+			logErrorf("update %s: %v", slug, err)
+			handleInternalError(w, r)
+			return
+		}
 	}
 
-	purgeKeys([]string{"post-index", "post-" + slug, "post-" + newSlug})
-
-	w.Header().Set("Location", "/admin")
-	w.WriteHeader(fsthttp.StatusFound)
+	keys := append(postPurgeKeys(updated.Slug, updated.Tags), postPurgeKeys(slug, oldPost.Tags)...)
+	purged := purgeKeys(ctx, keys)
+	redirectTo(w, withPurgeFlag(adminHome, purged))
 }
 
-// handleDeletePost deletes a post by slug.
+// handleDeletePost soft-deletes a post: a copy is kept under trash:<slug>.
 func handleDeletePost(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request, slug string) {
-	if err := requireAuth(r); err != nil {
-		redirectToLogin(w, err.Error())
+	if !authorize(w, r, wantsJSON(r)) {
 		return
 	}
-
-	store, err := kvstore.Open("content")
+	if !ValidSlug(slug) {
+		handleNotFound(w, r)
+		return
+	}
+	store, err := openContent()
 	if err != nil {
-		handleInternalError(w)
+		logErrorf("delete: %v", err)
+		handleInternalError(w, r)
 		return
 	}
-
+	post, found, err := readPost(store, slug)
+	if err != nil {
+		logErrorf("delete %s: %v", slug, err)
+		handleInternalError(w, r)
+		return
+	}
+	if !found {
+		if err := updateIndex(store, func(idx *PostIndex) { idx.Remove(slug) }); err != nil {
+			logErrorf("delete %s: %v", slug, err)
+			handleInternalError(w, r)
+			return
+		}
+		purged := purgeKeys(ctx, postPurgeKeys(slug, nil))
+		redirectTo(w, withPurgeFlag(adminHome, purged))
+		return
+	}
+	postJSON, err := json.Marshal(&post)
+	if err != nil {
+		logErrorf("delete %s: %v", slug, err)
+		handleInternalError(w, r)
+		return
+	}
+	if err := kvPut(store, trashKey(slug), string(postJSON), retentionTTLSeconds); err != nil {
+		logErrorf("delete %s: %v", slug, err)
+		handleInternalError(w, r)
+		return
+	}
 	if err := store.Delete("post:" + slug); err != nil {
-		log.Printf("[delete] failed to delete post:%s: %v", slug, err)
-	}
-
-	// Update index
-	index, err := readIndex()
-	if err != nil {
-		handleInternalError(w)
+		logErrorf("delete %s: %v", slug, err)
+		handleInternalError(w, r)
 		return
 	}
-	index.Remove(slug)
-	indexJSON, err := json.Marshal(&index)
-	if err != nil {
-		handleInternalError(w)
+	if err := updateIndex(store, func(idx *PostIndex) { idx.Remove(slug) }); err != nil {
+		logErrorf("delete %s: %v", slug, err)
+		handleInternalError(w, r)
 		return
 	}
-	if err := store.Insert("_index", strings.NewReader(string(indexJSON))); err != nil {
-		log.Printf("[delete] failed to update index: %v", err)
-	}
-
-	purgeKeys([]string{"post-index", "post-" + slug})
-
-	w.Header().Set("Location", "/admin")
-	w.WriteHeader(fsthttp.StatusFound)
+	purged := purgeKeys(ctx, postPurgeKeys(slug, post.Tags))
+	redirectTo(w, withPurgeFlag(adminHome, purged))
 }
 
-// handleUploadImage uploads an image to Fastly Object Storage via SigV4-signed PUT.
-func handleUploadImage(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
-	if err := requireAuth(r); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(fsthttp.StatusUnauthorized)
-		w.Write([]byte(`{"error":"unauthorized"}`))
+// handleRebuildIndex regenerates _index from the stored posts.
+func handleRebuildIndex(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
+	if !authorize(w, r, false) {
 		return
 	}
-
-	slug := r.URL.Query().Get("slug")
-	filename := r.URL.Query().Get("filename")
-	if slug == "" || filename == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(fsthttp.StatusBadRequest)
-		w.Write([]byte(`{"error":"slug and filename required"}`))
-		return
-	}
-
-	bodyBytes, err := io.ReadAll(r.Body)
+	store, err := openContent()
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(fsthttp.StatusInternalServerError)
-		w.Write([]byte(`{"error":"failed to read body"}`))
+		logErrorf("rebuild-index: %v", err)
+		handleInternalError(w, r)
 		return
 	}
-
-	accessKeyID, err := readSecret("fos_access_key_id")
-	if err != nil {
-		log.Printf("[upload] failed to read fos_access_key_id: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(fsthttp.StatusInternalServerError)
-		w.Write([]byte(`{"error":"config error"}`))
+	if err := rebuildIndex(store); err != nil {
+		logErrorf("rebuild-index: %v", err)
+		handleInternalError(w, r)
 		return
 	}
-	secretKey, err := readSecret("fos_secret_key")
-	if err != nil {
-		log.Printf("[upload] failed to read fos_secret_key: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(fsthttp.StatusInternalServerError)
-		w.Write([]byte(`{"error":"config error"}`))
-		return
+	purged := purgeKeys(ctx, []string{"post-index"})
+	redirectTo(w, withPurgeFlag(adminHome, purged))
+}
+
+// fosCredentials are the Object Storage settings read from the secret store.
+type fosCredentials struct {
+	accessKeyID, secretKey, region, bucket string
+}
+
+func readFOSCredentials() (fosCredentials, error) {
+	var c fosCredentials
+	fields := []struct {
+		name string
+		dst  *string
+	}{
+		{"fos_access_key_id", &c.accessKeyID},
+		{"fos_secret_key", &c.secretKey},
+		{"fos_region", &c.region},
+		{"fos_bucket", &c.bucket},
 	}
-	region, err := readSecret("fos_region")
-	if err != nil {
-		log.Printf("[upload] failed to read fos_region: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(fsthttp.StatusInternalServerError)
-		w.Write([]byte(`{"error":"config error"}`))
-		return
+	for _, f := range fields {
+		v, err := readSecret(f.name)
+		if err != nil {
+			return fosCredentials{}, fmt.Errorf("read %s: %w", f.name, err)
+		}
+		*f.dst = v
 	}
-	bucket, err := readSecret("fos_bucket")
-	if err != nil {
-		log.Printf("[upload] failed to read fos_bucket: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(fsthttp.StatusInternalServerError)
-		w.Write([]byte(`{"error":"config error"}`))
-		return
-	}
+	return c, nil
+}
 
-	objectKey := fmt.Sprintf("images/%s/%s", slug, filename)
-	host := fmt.Sprintf("%s.s3.%s.amazonaws.com", bucket, region)
-	urlStr := fmt.Sprintf("https://%s/%s", host, objectKey)
+// signedUploadHeaders computes the SigV4 headers for a PUT to Fastly Object
+// Storage. content-type, host, x-amz-content-sha256 and x-amz-date are signed.
+func signedUploadHeaders(c fosCredentials, host, path, contentType string, body []byte, datetime, date string) (authorization, payloadHash string) {
+	payloadHash = sha256Hex(body)
+	canonicalHeaders := fmt.Sprintf("content-type:%s\nhost:%s\nx-amz-content-sha256:%s\nx-amz-date:%s\n", contentType, host, payloadHash, datetime)
+	signedHeaders := "content-type;host;x-amz-content-sha256;x-amz-date"
+	canonicalRequest := fmt.Sprintf("PUT\n%s\n\n%s\n%s\n%s", path, canonicalHeaders, signedHeaders, payloadHash)
 
-	datetime, date := utcDatetime()
-	payloadHash := sha256Hex(bodyBytes)
-
-	// Canonical request
-	canonicalHeaders := fmt.Sprintf("host:%s\nx-amz-content-sha256:%s\nx-amz-date:%s\n", host, payloadHash, datetime)
-	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
-	canonicalRequest := fmt.Sprintf("PUT\n/%s\n\n%s\n%s\n%s", objectKey, canonicalHeaders, signedHeaders, payloadHash)
-
-	// String to sign
-	credentialScope := fmt.Sprintf("%s/%s/s3/aws4_request", date, region)
+	credentialScope := fmt.Sprintf("%s/%s/s3/aws4_request", date, c.region)
 	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s", datetime, credentialScope, sha256Hex([]byte(canonicalRequest)))
+	signature := signSigV4(deriveSigningKey(c.secretKey, date, c.region, "s3"), stringToSign)
 
-	// Signing key and signature
-	signingKey := deriveSigningKey(secretKey, date, region, "s3")
-	signature := signSigV4(signingKey, stringToSign)
+	authorization = fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
+		c.accessKeyID, credentialScope, signedHeaders, signature)
+	return authorization, payloadHash
+}
 
-	authHeader := fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
-		accessKeyID, credentialScope, signedHeaders, signature)
-
-	// Determine content type from filename
-	ct := "application/octet-stream"
-	lf := strings.ToLower(filename)
-	switch {
-	case strings.HasSuffix(lf, ".jpg"), strings.HasSuffix(lf, ".jpeg"):
-		ct = "image/jpeg"
-	case strings.HasSuffix(lf, ".png"):
-		ct = "image/png"
-	case strings.HasSuffix(lf, ".webp"):
-		ct = "image/webp"
-	case strings.HasSuffix(lf, ".gif"):
-		ct = "image/gif"
-	case strings.HasSuffix(lf, ".svg"):
-		ct = "image/svg+xml"
+// handleUploadImage validates an image and uploads it to Fastly Object Storage
+// with a SigV4-signed PUT.
+func handleUploadImage(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
+	if !authorize(w, r, true) {
+		return
+	}
+	body, err := readLimitedBody(r, maxUploadBytes)
+	if errors.Is(err, errBodyTooLarge) {
+		writeJSONError(w, fsthttp.StatusRequestEntityTooLarge, "upload exceeds 10 MiB")
+		return
+	}
+	if err != nil {
+		logErrorf("upload: read body: %v", err)
+		writeJSONError(w, fsthttp.StatusInternalServerError, "failed to read body")
+		return
 	}
 
-	req, err := fsthttp.NewRequest("PUT", urlStr, strings.NewReader(string(bodyBytes)))
+	query := r.URL.Query()
+	slug := query.Get("slug")
+	filename := query.Get("filename")
+	if !ValidSlug(slug) {
+		writeJSONError(w, fsthttp.StatusBadRequest, "invalid slug")
+		return
+	}
+	if !ValidFilename(filename) {
+		writeJSONError(w, fsthttp.StatusBadRequest, "invalid filename")
+		return
+	}
+	contentType := DetectImageType(body)
+	if contentType == "" || !ImageTypeMatchesFilename(contentType, filename) {
+		writeJSONError(w, fsthttp.StatusUnsupportedMediaType, "unsupported or mismatched image type")
+		return
+	}
+
+	creds, err := readFOSCredentials()
 	if err != nil {
-		log.Printf("[upload] failed to create request: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(fsthttp.StatusInternalServerError)
-		w.Write([]byte(`{"error":"request error"}`))
+		logErrorf("upload: %v", err)
+		writeJSONError(w, fsthttp.StatusInternalServerError, "storage is not configured")
+		return
+	}
+	host := creds.region + ".object.fastlystorage.app"
+	path := fmt.Sprintf("/%s/%s/%s", creds.bucket, slug, filename)
+	datetime, date := utcDatetime()
+	authorization, payloadHash := signedUploadHeaders(creds, host, path, contentType, body, datetime, date)
+
+	req, err := fsthttp.NewRequest("PUT", "https://"+host+path, strings.NewReader(string(body)))
+	if err != nil {
+		logErrorf("upload: build request: %v", err)
+		writeJSONError(w, fsthttp.StatusInternalServerError, "request error")
 		return
 	}
 	req.Header.Set("Host", host)
-	req.Header.Set("Authorization", authHeader)
+	req.Header.Set("Authorization", authorization)
+	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("x-amz-content-sha256", payloadHash)
 	req.Header.Set("x-amz-date", datetime)
-	req.Header.Set("Content-Type", ct)
 
 	resp, err := req.Send(ctx, "fastly-object-storage")
 	if err != nil {
-		log.Printf("[upload] backend send error: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(fsthttp.StatusBadGateway)
-		w.Write([]byte(`{"error":"upload failed"}`))
+		logErrorf("upload: backend send: %v", err)
+		writeJSONError(w, fsthttp.StatusBadGateway, "upload failed")
 		return
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(resp.Body)
-		log.Printf("[upload] FOS returned %d: %s", resp.StatusCode, string(respBody))
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(fsthttp.StatusBadGateway)
-		w.Write([]byte(`{"error":"upload rejected by storage"}`))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		logErrorf("upload: storage returned %d: %s", resp.StatusCode, readSnippet(resp.Body))
+		writeJSONError(w, fsthttp.StatusBadGateway, "upload rejected by storage")
 		return
 	}
 
-	imageURL := fmt.Sprintf("/images/%s/%s", slug, filename)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(fsthttp.StatusOK)
-	fmt.Fprintf(w, `{"url":"%s"}`, imageURL)
+	purgeKeys(ctx, []string{"image-" + slug})
+	writeJSON(w, fsthttp.StatusOK, map[string]string{"url": "/images/" + slug + "/" + filename})
 }
 
 // handleSidebarPage renders the sidebar editor page.
 func handleSidebarPage(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
-	if err := requireAuth(r); err != nil {
-		redirectToLogin(w, err.Error())
+	if !authorize(w, r, false) {
 		return
 	}
-
+	cfg := loadConfig(r.Host)
 	sidebar, err := readSidebar()
 	if err != nil {
-		handleInternalError(w)
+		logErrorf("sidebar page: %v", err)
+		handleInternalError(w, r)
 		return
 	}
-
 	sidebarJSON, err := json.Marshal(&sidebar)
 	if err != nil {
-		handleInternalError(w)
+		logErrorf("sidebar page: %v", err)
+		handleInternalError(w, r)
 		return
 	}
-
-	data := map[string]interface{}{
-		"is_admin":     true,
-		"sidebar":      sidebar,
-		"sidebar_json": string(sidebarJSON),
-		"page_title":   "Sidebar Editor",
-	}
-	html, err := renderPage("admin-sidebar", data)
-	if err != nil {
-		handleInternalError(w)
-		return
-	}
-	noCache(w)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(fsthttp.StatusOK)
-	w.Write([]byte(html))
+	data := adminVars(cfg, "/admin/sidebar", "Sidebar")
+	data["sidebar"] = sidebarView(sidebar)
+	data["sidebar_json"] = string(sidebarJSON)
+	writeAdminPage(w, r, fsthttp.StatusOK, "admin-sidebar", data)
 }
 
-// handleUpdateSidebar saves sidebar configuration from JSON body.
+// handleUpdateSidebar validates and saves the sidebar configuration (JSON).
 func handleUpdateSidebar(ctx context.Context, w fsthttp.ResponseWriter, r *fsthttp.Request) {
-	if err := requireAuth(r); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(fsthttp.StatusUnauthorized)
-		w.Write([]byte(`{"error":"unauthorized"}`))
+	if !authorize(w, r, true) {
 		return
 	}
-
-	bodyBytes, err := io.ReadAll(r.Body)
+	body, err := readLimitedBody(r, maxFormBodyBytes)
+	if errors.Is(err, errBodyTooLarge) {
+		writeJSONError(w, fsthttp.StatusRequestEntityTooLarge, "request body is too large")
+		return
+	}
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(fsthttp.StatusBadRequest)
-		w.Write([]byte(`{"error":"failed to read body"}`))
+		writeJSONError(w, fsthttp.StatusBadRequest, "failed to read body")
 		return
 	}
-
-	var sidebar SidebarConfig
-	if err := json.Unmarshal(bodyBytes, &sidebar); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(fsthttp.StatusBadRequest)
-		w.Write([]byte(`{"error":"invalid JSON"}`))
+	sidebar, err := ValidateSidebar(body)
+	if err != nil {
+		status, msg := failureStatus(err)
+		writeJSONError(w, status, msg)
 		return
 	}
-
 	sidebarJSON, err := json.Marshal(&sidebar)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(fsthttp.StatusInternalServerError)
-		w.Write([]byte(`{"error":"marshal error"}`))
+		logErrorf("sidebar: %v", err)
+		writeJSONError(w, fsthttp.StatusInternalServerError, "marshal error")
 		return
 	}
-
-	store, err := kvstore.Open("content")
+	store, err := openContent()
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(fsthttp.StatusInternalServerError)
-		w.Write([]byte(`{"error":"store error"}`))
+		logErrorf("sidebar: %v", err)
+		writeJSONError(w, fsthttp.StatusInternalServerError, "store error")
 		return
 	}
-
-	if err := store.Insert("_sidebar", strings.NewReader(string(sidebarJSON))); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(fsthttp.StatusInternalServerError)
-		w.Write([]byte(`{"error":"write error"}`))
+	if err := kvPut(store, sidebarKey, string(sidebarJSON), 0); err != nil {
+		logErrorf("sidebar: %v", err)
+		writeJSONError(w, fsthttp.StatusInternalServerError, "write error")
 		return
 	}
-
-	purgeKeys([]string{"sidebar"})
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(fsthttp.StatusOK)
-	w.Write([]byte(`{"ok":true}`))
-}
-
-// parseTags splits a comma-separated tag string into a cleaned slice.
-func parseTags(tagStr string) []string {
-	if tagStr == "" {
-		return []string{}
+	response := map[string]interface{}{"ok": true}
+	if !purgeKeys(ctx, []string{"sidebar", "post-index"}) {
+		response["purge_failed"] = true
 	}
-	parts := strings.Split(tagStr, ",")
-	var tags []string
-	for _, t := range parts {
-		t = strings.TrimSpace(t)
-		if t != "" {
-			tags = append(tags, t)
-		}
-	}
-	if tags == nil {
-		tags = []string{}
-	}
-	return tags
+	writeJSON(w, fsthttp.StatusOK, response)
 }

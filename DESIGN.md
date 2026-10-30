@@ -1,6 +1,8 @@
-# Edge CMS — Design Document (In Progress)
+# Edge CMS — Design Document
 
-An open-source CMS running entirely on Fastly's edge platform. Implemented in Rust, TypeScript, and Go with shared Handlebars templates. Demonstrates how Fastly's product suite composes into a real, deployable application.
+An open-source CMS running entirely on Fastly's edge platform. **Rust is the primary implementation**; TypeScript and Go are implemented parity backends that are frozen: they receive security and data-integrity fixes only, while new features land in Rust. All three use the same shared Handlebars templates. Demonstrates how Fastly's product suite composes into a real, deployable application.
+
+The behavior all three backends must share (status codes, headers, validation rules, template variables) is specified in [`docs/architecture/security-hardening-contract.md`](docs/architecture/security-hardening-contract.md). See [`README.md`](README.md) for installation, upgrade and operations.
 
 ---
 
@@ -8,42 +10,78 @@ An open-source CMS running entirely on Fastly's edge platform. Implemented in Ru
 
 | Product | Purpose |
 |---------|---------|
-| **Compute** | Application runtime — all logic runs at the edge |
-| **KV Store** | Post content, post index, sidebar config |
-| **Object Store** | Image uploads (binary blobs) |
-| **Secret Store** | Admin password (bcrypt hash), HMAC signing key |
+| **Compute** | Application runtime — routing, templating, auth, validation |
+| **VCL CDN Service** | Public layer in front of Compute: force-TLS, HSTS, caching, `/images/*` from Object Storage, origin auth header injection |
+| **KV Store** | Posts, index, sidebar, revisions, trash, revoked sessions |
+| **Config Store** | `site_url`, cache TTLs, `page_size` |
+| **Object Storage** | Image uploads; read-only key for VCL, read-write-objects key for Compute |
+| **Secret Store** | Admin password (bcrypt hash), HMAC key, origin auth token, Fastly API token, Object Storage read-write key |
+| **Edge Rate Limiting** | Precise login limit in Compute; coarse flood limit in VCL |
 | **Image Optimizer** | On-the-fly image transformation via query params |
-| **CDN Caching** | Cache all reader-facing responses at the edge |
 | **Surrogate Keys + Purge API** | Targeted cache invalidation on content changes |
-| **Rate Limiting** | Brute-force protection on admin login |
-| **Geolocation** | Localized details for readers (date format, nearest POP) |
-| **Real-time Log Streaming** | Request logging to external drain |
+| **Real-time Log Streaming** | Structured request logs to an HTTPS drain (truncated client IPs) |
+
+---
+
+## Architecture
+
+```
+Browser → VCL CDN service (public domain) → Compute service (app.<domain>)
+              │                                  │
+              ├─ /images/* → Object Storage      ├─ KV Store (content)
+              │   (SigV4, read-only key)         ├─ Config Store, Secret Store
+              └─ everything else ───────────────►└─ Purge API, Object Storage (uploads)
+```
+
+- **VCL service** — redirects HTTP to HTTPS (`301`), sends `Strict-Transport-Security: max-age=31536000; includeSubDomains`, applies a coarse ERL limit to `POST /admin/login` (VCL's rate limiter cannot go below 10 rps averaged over 60 s, so it only stops floods), passes `/admin*`, caches everything else, serves `/images/*`, and sets `Edge-CMS-Origin-Auth` on every backend request to Compute (`vcl_miss` and `vcl_pass`) from the private dictionary `edge_cms_private`. It strips any client-supplied copy of that header and resets `Fastly-Client-IP` on the first hop.
+- **Compute service** — the first thing it does is compare `Edge-CMS-Origin-Auth` (constant time) with Secret Store `origin_auth_token`; missing or wrong is `403` before any routing. After that `Fastly-Client-IP` is trusted as the client IP. Every response, including errors, carries the security headers below.
+- **Why a header and not network isolation:** Compute services are publicly addressable at their own domain. A shared secret proves the request passed through the VCL layer, so `app.<domain>` cannot be used to skip the rate limit, force-TLS, caching rules or image hardening.
+- **DNS** uses explicit records (apex and `app.`, plus Go/TS hosts if configured). No wildcard CNAME, so a dangling wildcard cannot route arbitrary subdomains to Fastly. The TLS certificate is a wildcard.
+
+### Security Response Headers (Compute, every response)
+
+```
+Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; frame-src https://www.youtube-nocookie.com https://www.youtube.com https://player.vimeo.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+X-Content-Type-Options: nosniff
+Referrer-Policy: strict-origin-when-cross-origin
+X-Frame-Options: DENY
+Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+Cross-Origin-Opener-Policy: same-origin
+```
+
+`/admin/*` adds `X-Robots-Tag: noindex, nofollow`. The CSP means templates contain no inline `<script>`, `<style>`, `style=""` or `on*=` attributes. JSON-LD (`<script type="application/ld+json">`) is data and is allowed.
 
 ---
 
 ## Directory Structure
 
 ```
-edge-cms/                  ← One self-contained example
-├── shared/                ← Handlebars templates, CSS, admin JS
+.
+├── shared/                ← Handlebars templates, CSS, JS, fonts
 │   ├── templates/
 │   │   ├── layout.hbs         ← Base layout (header, sidebar, footer)
-│   │   ├── home.hbs           ← Post listing page
+│   │   ├── _sidebar.hbs       ← Public sidebar partial
+│   │   ├── home.hbs           ← Post listing page (paginated)
 │   │   ├── post.hbs           ← Single post page
-│   │   ├── tag.hbs            ← Posts filtered by tag
+│   │   ├── tag.hbs            ← Posts filtered by tag (paginated)
+│   │   ├── error.hbs          ← Error pages
 │   │   ├── login.hbs          ← Admin login form
 │   │   ├── admin-dashboard.hbs
 │   │   ├── admin-editor.hbs   ← Split-pane markdown editor
 │   │   └── admin-sidebar.hbs  ← Sidebar management
-│   ├── css/
-│   ├── js/                    ← Admin JS (editor, sidebar management)
-│   └── static/                ← Fonts, icons
-├── rust/
-├── typescript/
-└── go/
+│   ├── css/                   ← style.css (reader), admin.css (admin + login)
+│   ├── js/                    ← site.js (public), admin.js (editor, sidebar)
+│   ├── fonts/                 ← Self-hosted woff2 + OFL licence
+│   └── test-fixtures/
+├── rust/                  ← Primary implementation
+├── typescript/            ← Parity backend, security fixes only
+├── go/                    ← Parity backend, security fixes only
+├── terraform/             ← VCL service, Compute service, stores, keys
+├── scripts/               ← KV backup/restore, integration runner, VCL lint
+└── docs/architecture/     ← Security hardening contract
 ```
 
-Each language directory contains a complete Fastly Compute application that reads templates from `shared/` at build time.
+Each language directory is a complete Fastly Compute application that embeds `shared/` at build time.
 
 ---
 
@@ -77,6 +115,7 @@ Each language directory contains a complete Fastly Compute application that read
       "excerpt": "A short summary...",
       "status": "published",
       "created_at": "2026-05-20T14:30:00Z",
+      "updated_at": "2026-05-20T15:00:00Z",
       "tags": ["fastly", "edge"],
       "featured_image": "/images/my-first-post/hero.jpg"
     }
@@ -84,7 +123,16 @@ Each language directory contains a complete Fastly Compute application that read
 }
 ```
 
-Sorted by `created_at` descending. Contains enough metadata to render listing pages without reading individual posts. Updated atomically on every post CRUD operation.
+Sorted by `created_at` descending; contains enough metadata to render listing pages without reading individual posts. `updated_at` is optional (older entries lack it; sitemaps fall back to `created_at`). The index is derived data: `POST /admin/rebuild-index` rebuilds it from the `post:` keys.
+
+### Other KV keys
+
+| Key | Value | Purpose |
+|-----|-------|---------|
+| `_sidebar` | JSON | Sidebar config |
+| `rev:<slug>:<unix_ts>` | previous post JSON | Written before each update (30-day TTL) |
+| `trash:<slug>` | post JSON | Written before a delete — soft delete (30-day TTL) |
+| `session-revoked:<nonce>` | expiry timestamp | Written on logout; TTL to the session's expiry |
 
 ### Sidebar Config (KV Store, key: `_sidebar`)
 
@@ -98,36 +146,38 @@ Sorted by `created_at` descending. Contains enough metadata to render listing pa
       "children": ["my-first-post", "setup-guide"]
     },
     {
-      "type": "category",
-      "label": "Advanced",
-      "slug": "advanced",
-      "children": ["edge-routing"]
-    },
-    {
       "type": "link",
       "label": "GitHub",
-      "url": "https://github.com/...",
+      "url": "https://example.com/repo",
       "icon": "github"
-    },
-    {
-      "type": "link",
-      "label": "Fastly Docs",
-      "url": "https://docs.fastly.com"
     }
   ]
 }
 ```
 
-Categories contain post slugs as children. Links are arbitrary URLs. Array order = display order.
+Categories contain post slugs as children; links point at a URL. Array order is display order. Validation: at most 64 KiB and 50 items; labels 1–100 chars; link URLs must be `https://`, `http://` or a root-relative `/path` (not `//`) — anything else, e.g. `javascript:`, is rejected with `400`, and links failing the rule are also omitted at render time. Unknown fields are dropped.
 
-### Images (Object Store, key: `images/<slug>/<filename>`)
+### Images (Fastly Object Storage, key: `<slug>/<filename>`)
 
-Binary image data. Served through `/images/*` route with Fastly Image Optimizer query params (e.g., `?width=800&format=webp`).
+Binary image data in an Object Storage bucket (not KV). Compute writes it on upload; the VCL service serves it at `/images/<slug>/<filename>` and Image Optimizer handles query params (e.g., `?width=800&format=webp`).
 
-### Secrets (Secret Store)
+### Configuration (Config Store `cache_config`)
 
-- `admin_password` — bcrypt hash of the admin password
-- `hmac_key` — key for signing session cookies
+| Key | Default if missing | Notes |
+|-----|--------------------|-------|
+| `site_url` | `https://` + `Host` | Absolute, no trailing slash. Used for canonical URLs and the CSRF `Origin` check |
+| `page_ttl` | `86400` | Edge TTL for pages |
+| `asset_ttl` | `31536000` | Edge TTL for `/assets/*` |
+| `image_ttl` | `31536000` | Present in the store; the image edge TTL is read by VCL from the `edge_cms_config` dictionary |
+| `page_size` | `10` | Posts per page on home and tag listings |
+
+### Secrets (Secret Store `secrets`)
+
+`admin_password` (bcrypt hash), `hmac_key`, `origin_auth_token`, `fastly_api_token` (purge scope), `purge_service_id`, `fos_access_key_id` and `fos_secret_key` (read-write-objects key), `fos_region`, `fos_bucket`.
+
+### Edge dictionaries (VCL service)
+
+`edge_cms_config` (`active_backend`, `image_ttl`), private `edge_cms_private` (`origin_auth_token`), private `edge_cms_fos_creds` (read-only Object Storage key for SigV4).
 
 ---
 
@@ -137,46 +187,73 @@ Binary image data. Served through `/images/*` route with Fastly Image Optimizer 
 
 | Route | Behavior | Surrogate Keys |
 |-------|----------|----------------|
-| `GET /` | Paginated post listing from index | `post-index sidebar` |
-| `GET /post/<slug>` | Read post from KV, render markdown → HTML via template | `post-<slug> sidebar` |
-| `GET /tag/<tag>` | Filter index by tag, render listing | `post-index sidebar` |
-| `GET /images/<slug>/<file>` | Read from Object Store, serve with IO headers | `image-<slug>` |
-| `GET /assets/*` | Static CSS/JS/fonts | `assets` |
-| `GET /robots.txt` | Generated from config | `config` |
-| `GET /sitemap.xml` | Generated from post index | `post-index` |
-| `GET /feed.xml` | RSS/Atom feed from post index | `post-index` |
+| `GET /` | Post listing, `?page=N` (1-based; out of range is `404`) | `post-index sidebar` |
+| `GET /post/<slug>` | Post from KV: markdown, sanitized, rendered through the template | `post-<slug> sidebar` |
+| `GET /tag/<tag>` | Filtered listing, paginated | `tag-<tag> post-index sidebar` |
+| `GET /images/<slug>/<file>` | **VCL only**, from Object Storage; Compute returns `404` | `images image-<slug>` |
+| `GET /assets/*` | Embedded CSS, JS, fonts; query string ignored | `assets` |
+| `GET /robots.txt` | `Disallow: /admin`, `Disallow: /api/`, sitemap link | `post-index` |
+| `GET /sitemap.xml` | Absolute URLs, `lastmod`; home, tag pages, posts | `post-index` |
+| `GET /feed.xml` | RSS with absolute links, RFC-822 dates | `post-index` |
+| `GET /api/edge-info` | `{"pop": ...}` for the footer badge; `no-store` | — |
 
 ### Admin Routes (behind auth, never cached)
 
 | Route | Behavior |
 |-------|----------|
 | `GET /admin/login` | Login form (password only) |
-| `POST /admin/login` | Validate password against Secret Store, set signed HMAC cookie |
-| `GET /admin` | Dashboard — post list with edit/delete, sidebar editor link |
+| `POST /admin/login` | Rate limit, CSRF check, verify password, set signed session cookie |
+| `GET /admin` | Dashboard — post list, purge-failure banner, rebuild-index action |
 | `GET /admin/posts/new` | New post form (split-pane markdown editor) |
-| `POST /admin/posts` | Create post → write to KV, update index, purge `post-index` |
-| `GET /admin/posts/<slug>/edit` | Edit post form, pre-populated |
-| `PUT /admin/posts/<slug>` | Update post → write to KV, update index, purge `post-<slug> post-index` |
-| `DELETE /admin/posts/<slug>` | Delete post → remove from KV + index, purge `post-<slug> post-index` |
-| `POST /admin/images` | Upload image to Object Store |
+| `POST /admin/posts` | Create (`409` if the slug exists) |
+| `GET /admin/posts/<slug>/edit` | Edit form |
+| `POST` or `PUT /admin/posts/<slug>` | Update (HTML forms POST; `PUT` is for API callers). Renaming to an existing slug is `409` |
+| `DELETE /admin/posts/<slug>` | Soft delete |
+| `POST /admin/images` | Upload an image |
 | `GET /admin/sidebar` | Sidebar editor |
-| `PUT /admin/sidebar` | Update sidebar config in KV, purge `sidebar` |
-| `POST /admin/logout` | Clear session cookie |
+| `PUT /admin/sidebar` | Update sidebar JSON (there is no `POST`) |
+| `POST /admin/rebuild-index` | Rebuild `_index` from `post:` keys, purge `post-index` |
+| `POST /admin/logout` | Revoke the session and clear the cookie |
 
 ---
 
-## Authentication
+## Authentication, CSRF and Rate Limiting
 
-1. Admin navigates to `/admin/login`, enters password (no username)
-2. Compute app reads bcrypt hash from Secret Store, validates
-3. On success: generate HMAC-signed token containing expiry timestamp, set as `HttpOnly; Secure; SameSite=Strict` cookie
-4. HMAC signing key lives in Secret Store
-5. Every `/admin/*` request (except login) validates the cookie signature and expiry
-6. Invalid/missing/expired → redirect to `/admin/login`
+1. Admin opens `/admin/login` and enters the password (no username; one shared password).
+2. Compute checks the login rate limit, then the bcrypt hash from the Secret Store.
+3. On success it issues a **v1 session token** `v1.<expires_unix>.<nonce>.<b64sig>` — nonce is 16 random bytes in hex, `sig` is HMAC-SHA256 over `v1.<expires>.<nonce>` with the Secret Store `hmac_key`, TTL 3600 s — set as `session=<token>; HttpOnly; Secure; SameSite=Strict; Path=/admin; Max-Age=3600`. Pre-v1 two-part tokens are rejected.
+4. Every `/admin/*` request except login validates the signature, expiry and that no `session-revoked:<nonce>` key exists. Invalid, expired or revoked sessions redirect to `/admin/login?error=expired`.
+5. **Logout** writes `session-revoked:<nonce>` to KV (with a TTL to expiry) and clears the cookie, so a copied token stops working.
 
-### Rate Limiting
+**CSRF.** For every non-GET/HEAD request under `/admin` (including the login POST): if `Sec-Fetch-Site` is present it must be `same-origin` (`none` is allowed); otherwise `Origin` must equal `site_url`; otherwise reject with `403`.
 
-Admin login endpoint: 5 attempts per minute per client IP. Uses Fastly's edge rate limiting product. Readers are unaffected.
+**Rate limiting, two layers.**
+
+- *Compute (precise):* Edge Rate Limiting `RateCounter` `login_attempts` plus `PenaltyBox` `login_penalty`, keyed by client IP. A `POST /admin/login` from an IP in the penalty box gets `429`; otherwise the counter increments, and more than 5 in the 60 s window puts the IP in the penalty box for 15 minutes. `429` carries `Retry-After: 900`. If an ERL host call itself errors, Compute logs a warning and allows the request (fail open) since the VCL layer still limits.
+- *VCL (coarse):* a `ratelimit.check_rate()` with the lowest limit VCL allows (10 rps averaged over 60 s, 15-minute penalty box) on `POST /admin/login` only, counted on the first Fastly hop. It stops floods, not guessing.
+
+**Known limitations:** one shared password and no MFA; KV-based revocation is eventually consistent across POPs.
+
+---
+
+## Input Validation
+
+Server-side, identical in all backends:
+
+| Field | Rule | Failure |
+|-------|------|---------|
+| slug | `^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$` | `400` |
+| title | 1–200 chars after trim | `400` |
+| excerpt | ≤ 500 chars | `400` |
+| content | ≤ 512 KiB | `413` |
+| tags | comma-separated, trimmed, lowercased, spaces to `-`, `^[a-z0-9][a-z0-9-]{0,49}$`, deduplicated, max 20 | invalid ones dropped |
+| status | `published` or `draft` | `400` |
+| form/JSON body | ≤ 1 MiB | `413` |
+| upload body | ≤ 10 MiB | `413` |
+| upload filename | `^[a-z0-9][a-z0-9_-]{0,63}\.(jpg\|jpeg\|png\|webp\|gif)$` | `400` |
+| upload type | detected from magic bytes (JPEG, PNG, GIF, WEBP), must match the extension; the detected type is stored as the object's Content-Type; SVG and everything else rejected | `415` |
+
+On update, an omitted field (or an empty title or content) keeps its existing value. HTML form posts re-render the editor with an error message; JSON callers get `{"error": "..."}`.
 
 ---
 
@@ -185,83 +262,86 @@ Admin login endpoint: 5 attempts per minute per client IP. Uses Fastly's edge ra
 ### Reader Responses
 
 ```
-Surrogate-Control: max-age=3600
-Cache-Control: max-age=60, public
+Surrogate-Control: max-age=<page_ttl>, stale-while-revalidate=60, stale-if-error=86400
+Cache-Control: max-age=<page_ttl>, public        (Compute)
+Cache-Control: public, no-cache                  (what browsers see — rewritten by VCL for HTML)
 Surrogate-Key: <relevant keys>
 ```
 
-- `Surrogate-Control` — tells Fastly's edge cache to hold the response for 1 hour
-- `Cache-Control` — tells the browser to hold for 1 minute (short so purges propagate quickly)
-- Surrogate keys enable targeted purging without flushing the entire cache
-
-### Admin Responses
-
-```
-Cache-Control: private, no-store
-```
-
-Never cached. Every admin request hits Compute.
+- `Surrogate-Control` holds the page at the edge for `page_ttl` (default one day). Long edge TTLs are safe because writes purge exactly the affected keys.
+- `stale-if-error` lets the edge keep serving a page if Compute or KV is failing.
+- The VCL service rewrites HTML browser caching to `public, no-cache`, so browsers always revalidate and purges are visible at once; edge TTL is unaffected.
+- feed.xml, sitemap.xml, robots.txt use the same `Surrogate-Control` with `Cache-Control: public, max-age=300`.
+- `/assets/*`: `Cache-Control: public, max-age=31536000, immutable`; template URLs carry `?v=<service version>` so a deploy busts them.
+- Errors and all admin responses: `Cache-Control: private, no-store`, no `Surrogate-Control`.
+- Image responses (VCL): `public, max-age=86400` for browsers, `image_ttl` at the edge (purged by `image-<slug>`); `Content-Type` forced from the extension; `X-Content-Type-Options: nosniff`; `Content-Security-Policy: default-src 'none'; sandbox`.
 
 ### Purge Flow
 
-On any admin write operation (create/update/delete post, update sidebar):
+On any admin write, Compute: (1) writes the new `post:<slug>`, (2) updates `_index`, (3) deletes the old key on a rename, (4) calls the Fastly Purge API (`POST /service/<purge_service_id>/purge`, `Surrogate-Key: <keys>`, `Fastly-Soft-Purge: 1`), (5) responds. Keys: create or delete `post-index post-<slug> sidebar` plus each `tag-<t>`; update the same plus the old slug and tags; sidebar save `sidebar post-index`; upload `image-<slug>`.
 
-1. Write to KV Store
-2. Call Fastly Purge API with relevant surrogate keys
-3. Return response to admin
+The purge status is checked. On a non-2xx response Compute logs the status and the first 200 bytes of the body and the admin redirect gets `?purge=failed`, which shows a warning banner on the dashboard. Because KV is eventually consistent, a read in a POP that has not yet received the new value can re-cache old content after a purge; a second purge resolves it.
 
-Purge happens synchronously before the admin gets a response, so the next reader request gets fresh content.
+---
+
+## Data Integrity
+
+- Only "key not found" means empty. Any other KV error returns `500` (no-store); an index is never written from a failed read.
+- Update order is write new post, update index, delete old key (rename only), purge.
+- Index updates use generation-conditional inserts with retries where the SDK supports them.
+- **Revisions:** before an update overwrites a post, the previous JSON goes to `rev:<slug>:<unix_ts>` (30-day TTL).
+- **Soft delete:** delete copies the post to `trash:<slug>` (30-day TTL) before removing `post:<slug>`.
+- **Rebuild:** `POST /admin/rebuild-index` regenerates `_index` from the `post:` keys.
+- The KV store itself is protected from deletion in Terraform; `scripts/kv-backup.sh` and `scripts/kv-restore.sh` export and replay it.
 
 ---
 
 ## Markdown Rendering
 
-Rendered on every Compute invocation (cache miss). Markdown → HTML conversion happens at the edge using language-native libraries:
+Pipeline: markdown → HTML (GFM tables, strikethrough, task lists) → **allowlist sanitize** → image rewrite. Rendered on cache misses only. Libraries:
 
-- **Rust:** `pulldown-cmark`
-- **TypeScript:** `marked` or `markdown-it`
-- **Go:** `goldmark`
+| Backend | Markdown | Sanitizer |
+|---------|----------|-----------|
+| Rust | `pulldown-cmark` | `ammonia` |
+| TypeScript | `marked` | `xss` |
+| Go | `goldmark` (raw HTML parsed so the sanitizer can keep the safe subset) | `bluemonday` |
 
-Since all reader responses are CDN-cached, the markdown parsing only runs on cache misses. The Compute cost per reader is effectively zero for repeat visits.
+Policy (identical across backends): tags `p h1–h6 a img ul ol li blockquote pre code em strong del s table thead tbody tr th td hr br sup sub details summary figure figcaption span div input iframe`; `a[href title]` with `rel="noopener noreferrer"` added to absolute http(s) links; `img[src alt title width height]`; `class` on `code pre span div` only when it matches `language-[a-z0-9+-]+`; `input` only as a disabled checkbox; `<iframe>` only when `src` is `https://` on `www.youtube-nocookie.com`, `www.youtube.com` or `player.vimeo.com`, otherwise the element is dropped. URL schemes allowed: `http`, `https`, `mailto`, relative. `<script>`, `on*` handlers and `javascript:`, `data:`, `vbscript:` URLs are removed.
 
 ---
 
 ## Image Handling
 
-1. Admin uploads image via the editor UI
-2. Compute app writes binary data to Object Store at key `images/<post-slug>/<filename>`
-3. In markdown, author references: `![Alt text](/images/my-post/hero.jpg?width=800)`
-4. Reader requests to `/images/*` → Compute reads from Object Store and serves with appropriate `Content-Type`
-5. Fastly Image Optimizer processes the image based on query params (`?width=`, `?height=`, `?format=`, `?quality=`)
-6. Response is CDN-cached with surrogate key `image-<slug>`
+1. Admin uploads an image in the editor (`POST /admin/images`).
+2. Compute validates it (see Input Validation: size, filename, magic bytes) and writes it to Object Storage at `<post-slug>/<filename>` using the read-write-objects key, then purges `image-<slug>`.
+3. The author references it in markdown: `![Alt](/images/my-post/hero.jpg?width=800)`.
+4. A reader request to `/images/*` never reaches Compute: the VCL service allows only `/images/<slug>/<file>.(jpg|jpeg|png|webp|gif)` (anything else is `404`), SigV4-signs the GET with the read-only key on cache misses, forces `Content-Type` from the extension and adds `nosniff` and a `default-src 'none'; sandbox` CSP.
+5. Image Optimizer applies `?width=`, `?height=`, `?format=`, `?quality=`.
+6. Responses are cached with surrogate keys `images image-<slug>`.
 
 ---
 
 ## Geolocation
 
-Reader pages use Fastly's `Fastly-Geo-*` request headers to add localized touches:
-
-- Date formatting based on detected region
-- Footer note: "Served from Fastly's [POP city] edge"
-- Demonstrates edge-native capability with minimal code
+The serving POP is shown in the footer badge. Cached HTML must not contain per-POP data, so the badge is filled in by `/assets/site.js`, which fetches `GET /api/edge-info` (`no-store`) after load.
 
 ---
 
 ## Logging
 
-Real-time log streaming configured to an external endpoint. Demonstrates Fastly's observability story. Configuration-level — minimal application code, primarily `fastly.toml` and service config.
+Compute writes structured JSON lines `{"ts","level","msg","method","path","status","duration_ms","client_ip"}` to the named endpoint `edge-cms-app-logs` (stderr if unavailable). `client_ip` is truncated (IPv4 /24, IPv6 /48). Passwords, tokens, cookies, request bodies and long upstream error bodies are never logged (bodies are cut at 200 bytes). The VCL service has an optional endpoint (`enable_vcl_logging`) that logs the truncated IP and URL path only, never the query string. Both are off unless `logging_endpoint_url` is set.
 
 ---
 
 ## Template System
 
-Shared Handlebars templates in `edge-cms/shared/templates/`. All three language implementations render the same template files using language-native Handlebars libraries:
+Shared Handlebars templates in `shared/templates/`. All three implementations render the same files using language-native libraries:
 
 - **Rust:** `handlebars` crate
 - **TypeScript:** `handlebars` npm package
 - **Go:** `raymond` package
 
-Templates are compiled into each Compute binary at build time. A reader comparing the Rust and Go implementations sees identical template files — the differences are in how each language handles routing, KV Store access, and response construction.
+Every layout render gets `site_url`, `page_title`, `meta_description`, `canonical_url` (absolute), `og_type`, `og_image`, `noindex`, `asset_version`, `is_admin`. Post pages also get `json_ld` (a `BlogPosting`, serialized with a real JSON encoder and `</` escaped) and percent-encoded share values; home and tag pages get a `pagination` object (`page`, `total_pages`, `prev_url`, `next_url`). The full variable contract is in the architecture contract, section 10.
 
 ---
 
@@ -269,41 +349,41 @@ Templates are compiled into each Compute binary at build time. A reader comparin
 
 ### Dashboard
 
-Post list table with title, status, date, and edit/delete actions. Link to sidebar editor. Link to create new post.
+Post list with title, status, date, and edit/delete actions; links to the sidebar editor and new post; a warning banner when the last purge failed; a rebuild-index action.
 
 ### Post Editor
 
 Split-pane markdown editor:
 - **Left pane:** Raw markdown textarea
-- **Right pane:** Live rendered preview (client-side JS using the same markdown library)
-- **Above editor:** Metadata fields — title, slug (auto-generated from title, editable), tags, status (draft/published), excerpt, featured image upload
-- Image upload button inserts markdown image reference at cursor position
+- **Right pane:** Live preview, rendered client-side (inserted with DOM-safe sinks)
+- **Above editor:** Title, slug (auto-generated from title, editable), tags, status (draft/published), excerpt, featured image upload
+- Image upload inserts a markdown image reference at the cursor; client-side checks mirror, but never replace, the server-side validation.
 
 ### Sidebar Editor
 
-List-based management (MVP — drag-and-drop as future enhancement):
+List-based management:
 - Add/remove categories and links
 - Reorder with up/down buttons
-- Assign posts to categories via dropdown
-- Save serializes to the sidebar config JSON and writes to KV Store
+- Assign posts to categories
+- Save sends the sidebar JSON with `PUT /admin/sidebar`
 
 ---
 
 ## Social & SEO
 
-- **Open Graph tags** on every post page (title, description, image, URL)
-- **Twitter Card meta tags**
-- **Canonical URLs**
-- **RSS/Atom feed** at `/feed.xml`
+- **Open Graph and Twitter Card tags** on every page (`canonical_url`, `page_title`, `meta_description`, `og_image`)
+- **Canonical URLs**, always absolute (`site_url` + path)
+- **RSS feed** at `/feed.xml`, advertised with a `<link rel="alternate">`
 - **Sitemap** at `/sitemap.xml`
-- **robots.txt** allowing all crawlers
-- **Structured data** (JSON-LD Article schema) on post pages
+- **robots.txt** disallowing `/admin` and `/api/`
+- **Structured data** (JSON-LD `BlogPosting`) on post pages
+- `noindex` on admin, login and error pages
 
 ---
 
 ## Visual Design
 
-Mockup files live in `edge-cms/mockups/`. These are static HTML files that demonstrate the design system without any backend — open them directly in a browser.
+Mockup files live in `mockups/`. These are static HTML files that demonstrate the design system without any backend — open them directly in a browser.
 
 | Mockup | File |
 |--------|------|
@@ -314,7 +394,7 @@ Mockup files live in `edge-cms/mockups/`. These are static HTML files that demon
 
 ### Fonts
 
-Three-font stack, all variable/web fonts:
+Three-font stack, self-hosted as latin woff2 under `/assets/fonts/` (OFL; no Google Fonts requests, which the CSP forbids):
 
 - **Fraunces** (variable serif) — Display headings, post titles, blog name. Provides editorial character.
 - **DM Sans** (geometric sans-serif) — Body text, UI labels, navigation. Clean and readable.
@@ -349,148 +429,66 @@ The post editor uses a split-pane layout: markdown textarea on the left, live HT
 
 ### Distinguishing Touches
 
-- **"Served from [POP]" footer**: Reader pages show the Fastly POP that served the response, with a green pulse dot indicating edge delivery. Demonstrates geolocation without being intrusive.
-- **Edge performance badge**: Sidebar widget showing response time and cache status (`HIT`/`MISS`). Makes the Fastly caching story visible.
+- **"Served from [POP]" footer**: a green pulse dot and the Fastly POP code that served the response. Cached HTML never embeds per-POP data: `/assets/site.js` fills it in client-side from `GET /api/edge-info`.
+- **Edge performance badge**: Sidebar widget showing response time and cache status (`HIT`/`MISS`/`PASS`, read from the `Server-Timing` header the VCL service adds). Makes the Fastly caching story visible.
 - **Tag pills**: Rounded badges using category-specific colors derived from the palette. Tags get terracotta; status badges (draft/published) get green/gold.
 
 ---
 
 ## Build Process
 
-Each language implementation embeds templates, CSS, and JS from `shared/` at compile time. No runtime file I/O — everything is baked into the Compute binary.
+Each implementation embeds templates, CSS, JS and fonts from `shared/` at compile time. No runtime file I/O — everything is baked into the Compute binary.
 
 ### Rust
 
-`build.rs` handles the shared asset pipeline:
-
-1. `build.rs` copies `../shared/templates/`, `../shared/css/`, and `../shared/js/` into the build output directory
-2. Templates embedded into the binary via `include_str!()` macros
-3. CSS and JS embedded as static byte arrays (`include_bytes!()`)
-4. Handlebars templates pre-compiled at startup using `lazy_static` (one-time cost on first request, then reused for the lifetime of the Compute instance)
+No `build.rs`. Templates are embedded with `include_str!` and assets with `include_bytes!`, both with paths relative to `../shared/`. The Handlebars registry is built once per instance in a `OnceLock`.
 
 ```bash
-cargo build --target wasm32-wasi    # via `fastly compute build`
+cd rust && fastly compute build      # cargo build --target wasm32-wasip1
 ```
 
 ### TypeScript
 
-Webpack or esbuild bundles shared assets as string imports:
-
-1. Bundler plugin (e.g., `raw-loader` for Webpack, text loader for esbuild) imports `.hbs`, `.css`, and `.js` files as raw strings
-2. Templates registered with the `handlebars` npm package at module initialization
-3. CSS and JS served as static responses from embedded strings
-4. Uses `@fastly/js-compute` SDK for the Compute runtime
+Webpack bundles `.hbs`, `.css`, `.js` and font files as source/inline assets, then `js-compute-runtime` builds the WASM. Uses `@fastly/js-compute`, `handlebars`, `marked` and `xss`.
 
 ```bash
-npm run build           # bundle step
-fastly compute build    # package WASM
+cd typescript && npm ci && fastly compute build    # prebuild runs webpack
 ```
 
 ### Go
 
-Go's `embed` package handles everything natively:
-
-1. `//go:embed shared/templates/*` directive embeds the entire template directory into the binary
-2. `embed.FS` provides filesystem-like access to templates at runtime
-3. `raymond` (Handlebars for Go) compiles templates from the embedded FS at `init()`
-4. CSS and JS similarly embedded via `//go:embed` directives
+`go/shared` is a copy of `../shared` (untracked; Go's `embed` cannot follow `..`). The Makefile refreshes it before every build and test.
 
 ```bash
-GOARCH=wasm GOOS=wasip1 go build    # via `fastly compute build`
+cd go && make build      # copy-shared, then fastly compute build
 ```
 
 ### Shared Assets
 
-- **CSS**: Single `style.css` in `shared/css/`. Uses CSS custom properties (variables) for theming — no preprocessor needed.
-- **JS**: Minimal vanilla JavaScript in `shared/js/` for admin functionality — markdown preview, tag input widget, sidebar reordering. No framework dependency.
-- **Templates**: Handlebars `.hbs` files reference CSS and JS via paths (`/assets/style.css`, `/assets/admin.js`) that each Compute app serves from its embedded assets.
+- **CSS:** `style.css` (reader) and `admin.css` (admin and login). CSS custom properties, WCAG contrast tokens, focus styles, dark mode and reduced-motion support; no preprocessor.
+- **JS:** `site.js` (edge-info badge, copy-link, share) and `admin.js` (editor, tag input, sidebar). Vanilla JS, CSP-safe (no inline handlers, DOM-safe sinks).
+- **Templates** reference `/assets/style.css`, `/assets/admin.css`, `/assets/site.js`, `/assets/admin.js` and `/assets/fonts/*` with `?v={{asset_version}}`; each backend serves them from its embedded copy and returns `404` for anything else.
 
 ---
 
 ## Deployment & Initial Setup
 
-Step-by-step for getting a fresh Edge CMS running. Assumes one of the three language implementations; the process is identical except for the build toolchain.
+The README is the authoritative runbook; this is the shape of it.
 
-### Prerequisites
+**Infrastructure is Terraform.** `terraform/` defines the VCL service (snippets, three dictionaries, compression, Image Optimizer), the Rust Compute service, the content KV store (delete-protected), the Config Store, an empty Secret Store, the generated origin auth token and the two Object Storage access keys. Go and TypeScript Compute services are managed outside Terraform; `go_backend_host` and `ts_backend_host` add a VCL backend and DNS record for them.
 
-- Fastly account with Compute enabled
-- Fastly CLI installed and authenticated (`fastly profile create`)
-- Language toolchain: Rust (with `wasm32-wasi` target), Node.js, or Go
+**Post-apply steps** (cannot be Terraform-managed; all secrets go in via `--stdin` or `read -rs`):
 
-### 1. Create Stores
+1. Write Secret Store entries: `origin_auth_token`, `admin_password`, `hmac_key`, `fastly_api_token`, `purge_service_id`, `fos_access_key_id`/`fos_secret_key` (read-write key), `fos_region`, `fos_bucket`.
+2. Write the private dictionaries: `edge_cms_private` (`origin_auth_token`, same value) and `edge_cms_fos_creds` (read-only key).
+3. Enable Edge Rate Limiting on the VCL service.
+4. Create the Object Storage bucket once with a temporary admin key, then delete that key.
+5. Seed `_index` and `_sidebar` in KV.
+6. Create the DNS records (`terraform output dns_routing_records`) and the wildcard TLS subscription.
 
-```bash
-fastly kv-store create --name=edge-cms-content
-# → Returns store ID — save this
+**Origin auth is the coupling to get right:** the token must be in both the Secret Store and `edge_cms_private`, and before the Compute package that enforces it goes live — otherwise every request is `403`. The README's upgrade runbook orders the steps (VCL first, secrets, then Compute) so an existing site never sees that window, and lists rollback by re-activating the previous service versions.
 
-fastly kv-store create --name=edge-cms-images
-# → Returns store ID — save this
-
-fastly secret-store create --name=edge-cms-secrets
-# → Returns store ID — save this
-```
-
-### 2. Set Initial Secrets
-
-Generate a bcrypt hash of your chosen admin password and a random HMAC signing key:
-
-```bash
-# Generate bcrypt hash (requires htpasswd, python, or similar)
-BCRYPT_HASH=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'your-password', bcrypt.gensalt()).decode())")
-
-# Generate HMAC key (32 bytes, base64-encoded)
-HMAC_KEY=$(openssl rand -base64 32)
-
-# Store both in Secret Store
-fastly secret-store-entry create --store-id=<secrets-store-id> --name=admin_password --secret="$BCRYPT_HASH"
-fastly secret-store-entry create --store-id=<secrets-store-id> --name=hmac_key --secret="$HMAC_KEY"
-```
-
-### 3. Configure Environment
-
-Per repo conventions, store IDs and tokens go in `.env` (never committed). Each language directory includes a `.env.example`:
-
-```
-FASTLY_API_TOKEN=your-api-token-here
-FASTLY_SERVICE_ID=your-service-id-here
-KV_STORE_ID_CONTENT=your-kv-store-id-here
-KV_STORE_ID_IMAGES=your-image-store-id-here
-SECRET_STORE_ID=your-secret-store-id-here
-```
-
-Copy to `.env` and fill in real values. The `.env` file is in `.gitignore`.
-
-### 4. Configure `fastly.toml`
-
-Link store IDs to the Compute service. The committed `fastly.toml` uses placeholder values — replace with your store IDs or source them from `.env` in your deploy script.
-
-### 5. Seed Initial Data (Optional)
-
-A helper script writes the minimum KV entries for a functional site:
-
-```bash
-# Write empty post index
-fastly kv-store-entry create --store-id=<content-store-id> --key=_index --value='{"posts":[]}'
-
-# Write default sidebar config
-fastly kv-store-entry create --store-id=<content-store-id> --key=_sidebar --value='{"items":[]}'
-```
-
-Without seeding, the site renders with empty content and the admin can create posts immediately.
-
-### 6. Build & Deploy
-
-```bash
-cd edge-cms/<language>/
-fastly compute build
-fastly compute deploy
-```
-
-### 7. First Run
-
-1. Visit `https://<your-domain>/admin/login`
-2. Enter the admin password set in step 2
-3. Create your first post from the admin dashboard
+**Local development** needs no Fastly account: `fastly compute serve` with fixtures in `tests/`. Local requests must send `Edge-CMS-Origin-Auth: local-dev-origin-auth` (there is no VCL service to inject it), and the admin password fixture is `admin`.
 
 ---
 
@@ -500,73 +498,48 @@ fastly compute deploy
 
 | Scenario | Status | Behavior |
 |----------|--------|----------|
-| Post not found | `404` | Styled 404 page using the blog template (same header, sidebar, footer). Friendly message with a link back to the homepage. |
-| KV Store read failure | `503` | Clean error page with a "temporarily unavailable" message. Full error details logged to real-time log streaming. Never exposed to the reader. |
-| Template render failure | `500` | Minimal error page (not dependent on the broken template). Error context logged. |
+| Post not found, out-of-range page, unknown route | `404` | Styled error page using the site layout; `noindex` |
+| KV read failure (anything other than not-found) | `500` | Generic error page; detail goes to the log only; `private, no-store` |
+| Origin auth missing or wrong | `403` | Plain `Forbidden`; `private, no-store` |
 
-Reader error pages look like they belong to the site — same fonts, colors, and navigation. They never expose stack traces, store IDs, or internal paths.
+Error pages are never cached and never expose stack traces, store IDs or internal paths.
 
 ### Admin Errors
 
 | Scenario | Status | Behavior |
 |----------|--------|----------|
-| Invalid/expired session | `302` | Redirect to `/admin/login?error=expired` or `?error=invalid`. Login page renders the appropriate message. |
-| Form validation failure | `422` | Re-render the form with validation errors inline next to the relevant fields. All form data preserved — the user never loses work. |
-| KV Store write failure | `500` | Error banner at the top of the admin page. Form state preserved in the response body so the user can retry without re-entering data. |
-| Image upload failure | `422` | Error message with the specific reason (file too large, invalid format, etc.). Post editor state preserved. |
-| Login rate limit exceeded | `429` | "Too many attempts, try again in X seconds" message on the login page. |
-
-Admin error messages include the error type (e.g., "Store write failed") but never internal details like store IDs, key paths, or stack traces.
+| Missing, invalid, expired or revoked session | `302` | Redirect to `/admin/login?error=expired` |
+| CSRF check fails | `403` | `Forbidden`, no cookie set |
+| Validation failure | `400` / `409` / `413` | Editor re-rendered with the error and the user's input; JSON callers get `{"error": "..."}` |
+| Upload: too large / wrong type | `413` / `415` | Error message; editor state preserved |
+| KV failure | `500` | Generic error; nothing is partially indexed |
+| Login rate limit | `429` | `Too many login attempts`, `Retry-After: 900` |
+| Purge failure | redirect | `?purge=failed` banner on the dashboard |
 
 ### Cross-Cutting Patterns
 
-- All error responses use appropriate HTTP status codes — no `200 OK` with an error body.
-- All errors logged to the real-time log streaming endpoint. Log entries include: ISO 8601 timestamp, error type/category, request path, and client IP (hashed for privacy).
-- Every error page includes navigation back to a working page (homepage for readers, dashboard for admins).
-- Error pages are self-contained — they don't depend on KV Store reads or template partials that might themselves be failing.
+- Appropriate HTTP status codes — no `200 OK` with an error body.
+- Errors are logged as structured JSON with a truncated client IP.
+- Error pages are self-contained and do not depend on KV reads.
 
 ---
 
 ## Testing Strategy
 
-### Unit Tests (Per Language)
+How to run everything is in the README. What is covered:
 
-Each language implementation includes unit tests covering core logic in isolation:
+### Unit tests (per language)
 
-- **Markdown rendering**: Verify HTML output for edge cases — nested formatting, code blocks with language hints, image references with IO query params, empty input, malformed markdown
-- **Authentication**: HMAC cookie signing/verification round-trip, expiry validation (fresh cookie, expired cookie, tampered cookie), bcrypt password checking against known hashes
-- **Data model**: JSON serialization/deserialization of posts, post index, and sidebar config. Verify handling of missing optional fields, empty arrays, malformed JSON
-- **URL routing**: Path matching returns the correct handler — verify all public and admin routes, trailing slash normalization, unknown paths return 404 handler
-- **Template rendering**: Spot-check that rendered HTML contains expected elements for given input data (post title in `<h1>`, tags as list items, sidebar categories)
+Run with `cargo test` (rust), `make test` (go) and `npm test -- --coverage` (typescript; coverage threshold enforced in `jest.config.js`). They cover pure logic in isolation: markdown rendering and sanitizer policy (`<script>`, `onerror=`, `javascript:` hrefs, allowed and disallowed iframes, tables, `language-*` classes), session token creation and verification (tampering, expiry, revocation key), validation rules, CSRF decisions, sidebar schema, pagination, SEO and JSON-LD, routing, and model (de)serialization including missing optional fields.
 
-### Integration Tests (Viceroy)
+### Integration tests (Viceroy)
 
-Full request/response cycle tests running against `fastly compute serve`:
+One bash suite, `rust/tests/integration.sh`, encodes the hardening contract and runs against **all three backends** through `scripts/run-integration.sh <rust|typescript|go>` (also in CI). It sends the origin auth header on every request and covers: origin auth (missing, wrong, same-length-wrong tokens), security headers, CSRF cases, login and session lifecycle (legacy and tampered tokens, logout revocation), the admin CRUD flow, `409` conflicts, validation limits, sidebar validation, and `404` for `/images/*`. Viceroy may stub ERL, so the login limit's decision logic is unit tested and the live limit is checked in production smoke tests rather than asserted end to end.
 
-- **Reader routes**: GET every public route, verify status codes and response body contains expected content
-- **Admin CRUD flow**: Create post → verify it appears in listing → edit title → verify change → delete → verify removal from listing
-- **Auth flow**: Login with correct password → receive cookie → access admin with cookie → wait for expiry → verify redirect to login
-- **Cache headers**: Reader responses include `Surrogate-Control`, `Cache-Control: max-age=60, public`, and correct `Surrogate-Key` values
-- **Admin cache absence**: All admin responses include `Cache-Control: private, no-store`
-- **Image round-trip**: Upload image via admin → retrieve via reader route → verify Content-Type and binary content
-- **Rate limiting**: Hit the login endpoint beyond threshold → verify `429` response
+### Parity
 
-### Cross-Language Parity Tests
+Parity is the same suite on three backends: a behavior difference fails the corresponding CI job. Fixtures under `shared/test-fixtures/` and each backend's `tests/` directory hold the sample post, index and sidebar data.
 
-An HTTP-level test suite that runs identical requests against all three implementations and compares behavior:
+### Edge layer
 
-- **Test runner**: Shell scripts using `curl` or `httpie`, or a lightweight test harness. Runs each implementation via Viceroy, executes the same request sequence, and diffs the results.
-- **What's compared**: HTTP status codes, cache-related headers, redirect behavior, and HTML structure (same DOM elements and hierarchy — not byte-identical output, since whitespace and attribute order may differ).
-- **Shared test fixtures**: `edge-cms/shared/test-fixtures/` contains sample post JSON, index JSON, sidebar config JSON, and expected response fragments. Used by both unit tests (deserialization) and integration tests (seeded into local KV Store via Viceroy config).
-- **CI execution**: Build all three implementations → start each with Viceroy on different ports → run the parity suite against each → compare results and fail on divergence.
-
-### Test Data
-
-Fixtures directory at `edge-cms/shared/test-fixtures/` containing:
-
-- Sample posts (published, draft, with images, with various tag combinations)
-- Post index with multiple entries
-- Sidebar config with categories, links, and nested children
-- Edge cases: empty index, post with no tags, post with very long content
-
-Fixtures are used by unit tests for deserialization testing and by integration tests for seeding the local KV Store via Viceroy's `fastly.toml` configuration.
+VCL lives inline in `terraform/vcl.tf`. CI extracts each snippet with `scripts/extract-vcl.sh`, wraps it in its subroutine and lints it with `falco`. There is no local VCL integration test: after any VCL change run the production smoke tests from the README (HTTPS and HSTS, `app.<domain>` direct access `403`, login).

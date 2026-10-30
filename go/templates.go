@@ -16,11 +16,8 @@ import (
 //go:embed shared/templates/*.hbs
 var templateFS embed.FS
 
-//go:embed shared/css/style.css
-var cssContent string
-
-//go:embed shared/js/admin.js
-var adminJSContent string
+//go:embed shared/css/style.css shared/css/admin.css shared/js/site.js shared/js/admin.js shared/fonts/fraunces.woff2 shared/fonts/dm-sans.woff2 shared/fonts/jetbrains-mono.woff2
+var assetFS embed.FS
 
 var (
 	initOnce    sync.Once
@@ -142,7 +139,7 @@ func readingTimeHelper(content string) string {
 	return fmt.Sprintf("%d", minutes)
 }
 
-// eqHelper returns true if a and b are equal strings.
-func eqHelper(a, b string) bool {
-	return a == b
+// eqHelper returns true if a and b are equal when rendered as strings.
+func eqHelper(a, b interface{}) bool {
+	return fmt.Sprint(a) == fmt.Sprint(b)
 }

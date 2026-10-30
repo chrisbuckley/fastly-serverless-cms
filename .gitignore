@@ -44,3 +44,9 @@ crash.log
 # Superpowers brainstorm artifacts
 .superpowers/
 docs/superpowers/
+
+# Local audit reports (contain unpatched findings — never commit; repo is public)
+audit-output/
+
+# Claude Code agent worktrees
+.claude/worktrees/

@@ -46,9 +46,15 @@ variable "shield_pop" {
 }
 
 variable "logging_endpoint_url" {
-  description = "HTTPS logging drain URL — leave empty to disable"
+  description = "HTTPS logging drain URL — leave empty to disable. Used by the Compute app (endpoint edge-cms-app-logs) and, if enable_vcl_logging, the VCL service."
   type        = string
   default     = ""
+}
+
+variable "enable_vcl_logging" {
+  description = "Also stream VCL CDN request logs to logging_endpoint_url (default off). Entries carry a truncated client IP (/24 IPv4, /48 IPv6) and the URL path only — never the query string."
+  type        = bool
+  default     = false
 }
 
 variable "logging_token" {

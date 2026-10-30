@@ -494,6 +494,32 @@ resource "fastly_service_vcl" "cdn" {
     VCL
   }
 
+  # Truncated client IP for the VCL request log (IPv4 /24 -> a.b.c.0,
+  # IPv6 /48 -> h1:h2:h3::). Computed in deliver, which always runs before
+  # vcl_log; req headers set here are never sent to a backend.
+  # addr.extract_bits numbers bits from the least-significant end.
+  # Ref: https://www.fastly.com/documentation/reference/vcl/functions/addr/addr-extract-bits/
+  snippet {
+    name     = "log-client-ip"
+    type     = "deliver"
+    priority = 90
+    content  = <<-VCL
+      declare local var.log_ip IP;
+      set var.log_ip = std.str2ip(req.http.Fastly-Client-IP, "0.0.0.0");
+      if (addr.is_ipv6(var.log_ip)) {
+        set req.http.X-Edge-CMS-Log-IP =
+          std.itoa_charset(addr.extract_bits(var.log_ip, 112, 16), "0123456789abcdef") + ":" +
+          std.itoa_charset(addr.extract_bits(var.log_ip, 96, 16), "0123456789abcdef") + ":" +
+          std.itoa_charset(addr.extract_bits(var.log_ip, 80, 16), "0123456789abcdef") + "::";
+      } else {
+        set req.http.X-Edge-CMS-Log-IP =
+          std.itoa(addr.extract_bits(var.log_ip, 24, 8)) + "." +
+          std.itoa(addr.extract_bits(var.log_ip, 16, 8)) + "." +
+          std.itoa(addr.extract_bits(var.log_ip, 8, 8)) + ".0";
+      }
+    VCL
+  }
+
   # Expose the edge cache result for the page load to the browser (read from
   # Navigation Timing's serverTiming) so the sidebar can show HIT / MISS / PASS.
   snippet {
@@ -532,8 +558,12 @@ resource "fastly_service_vcl" "cdn" {
     VCL
   }
 
+  # Optional request log (var.enable_vcl_logging, default off).
+  # Privacy: client IP is truncated to /24 (IPv4) or /48 (IPv6) by the
+  # log-client-ip snippet, and only the URL path is logged (query strings can
+  # carry tokens or personal data).
   dynamic "logging_https" {
-    for_each = var.logging_endpoint_url != "" ? [1] : []
+    for_each = var.enable_vcl_logging && var.logging_endpoint_url != "" ? [1] : []
     content {
       name              = "edge-cms-cdn-logs"
       url               = var.logging_endpoint_url
@@ -544,17 +574,17 @@ resource "fastly_service_vcl" "cdn" {
       message_type      = "blank"
       request_max_bytes = 0
       json_format       = "2"
-      # %{ in Fastly log format must be escaped as %%{ in Terraform template strings
+      # "%{" must be written "%%{" in Terraform strings; a bare "%" is literal.
       format = jsonencode({
-        timestamp    = "%%{begin:%%Y-%%m-%%dT%%H:%%M:%%SZ}t"
+        timestamp    = "%%{begin:%Y-%m-%dT%H:%M:%SZ}t"
         service_id   = "%%{req.service_id}V"
-        url          = "%%{req.url}V"
+        path         = "%%{json.escape(req.url.path)}V"
         method       = "%%{req.method}V"
         status       = "%%{resp.status}V"
         cache_status = "%%{fastly_info.state}V"
         region       = "%%{server.region}V"
         pop          = "%%{server.datacenter}V"
-        client_ip    = "%%{req.http.Fastly-Client-IP}V"
+        client_ip    = "%%{req.http.X-Edge-CMS-Log-IP}V"
         bytes        = "%B"
         ttfb_ms      = "%%{time.elapsed.msec}V"
       })

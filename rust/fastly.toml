@@ -11,10 +11,6 @@ description = "A CMS running entirely on Fastly's edge platform"
       file = "tests/kv-content.json"
       format = "json"
 
-    [local_server.kv_stores.images]
-      file = "tests/kv-images.json"
-      format = "json"
-
   [local_server.config_stores]
 
     [local_server.config_stores.cache_config]
@@ -32,8 +28,6 @@ description = "A CMS running entirely on Fastly's edge platform"
   [setup.kv_stores]
 
     [setup.kv_stores.content]
-
-    [setup.kv_stores.images]
 
   [setup.secret_stores]
 

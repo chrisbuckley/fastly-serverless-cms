@@ -49,3 +49,6 @@ audit-output/
 
 # Claude Code agent worktrees
 .claude/worktrees/
+
+# Local KV backups (contain content data)
+kv-backups/

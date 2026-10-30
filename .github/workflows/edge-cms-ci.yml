@@ -3,6 +3,8 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -11,6 +13,17 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
+
+# Every third-party action is pinned to a full commit SHA (tag in the comment).
+# Dependabot (.github/dependabot.yml) proposes bumps.
+#   actions/checkout           11d5960a326750d5838078e36cf38b85af677262  v4.4.0
+#   actions/cache              0057852bfaa89a56745cba8c7296529d2fc39830  v4.3.0
+#   actions/setup-go           40f1582b2485089dde7abd97c1529aa768e1baff  v5.6.0
+#   actions/setup-node         49933ea5288caeca8642d1e84afbd3f7d6820020  v4.4.0
+#   dorny/paths-filter         0e4a8c6effa4802afeda77dc8d303f8176d7dfad  v3.0.4
+#   hashicorp/setup-terraform  b9cd54a3c349d3f38e8881555d616ced269862dd  v3.1.2
+#   dtolnay/rust-toolchain     b725eda525362e7cf34af9a7243cac1e3f01a7ec  stable branch tip
+#   fastly/compute-actions     0364c1d9c6f85bfe74633443e44c04cf1972ab54  v6 (annotated tag, dereferenced)
 
 jobs:
   changes:
@@ -23,24 +36,41 @@ jobs:
       terraform: ${{ steps.filter.outputs.terraform }}
       vcl: ${{ steps.filter.outputs.vcl }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # On pull_request this diffs against the base branch; on push it diffs
+      # against the previous commit (github.event.before).
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
         id: filter
         with:
           filters: |
             rust:
               - 'rust/**'
               - 'shared/**'
+              - 'scripts/run-integration.sh'
+              - '.github/workflows/edge-cms-ci.yml'
             go:
               - 'go/**'
               - 'shared/**'
+              - 'rust/tests/integration.sh'
+              - 'scripts/run-integration.sh'
+              - '.github/workflows/edge-cms-ci.yml'
             typescript:
               - 'typescript/**'
               - 'shared/**'
+              - 'rust/tests/integration.sh'
+              - 'scripts/run-integration.sh'
+              - '.github/workflows/edge-cms-ci.yml'
             terraform:
               - 'terraform/**'
+              - '.github/workflows/edge-cms-ci.yml'
             vcl:
+              - 'terraform/**'
               - '**/*.vcl'
+              - 'scripts/extract-vcl.sh'
+              - 'scripts/lint-vcl.sh'
+              - '.github/workflows/edge-cms-ci.yml'
 
   rust-checks:
     name: Rust (fmt + clippy + test)
@@ -51,14 +81,19 @@ jobs:
       run:
         working-directory: rust
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
+
+      # The action derives the toolchain from its ref name; pinned by SHA it
+      # needs an explicit `toolchain`.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
           targets: wasm32-wasip1
           components: clippy, rustfmt
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -69,6 +104,8 @@ jobs:
 
       - run: cargo fmt -- --check
       - run: cargo clippy --target wasm32-wasip1 -- -D warnings
+      # Unit tests build for the native host target (the fastly crate compiles
+      # natively; only the Compute entrypoint needs wasm32-wasip1).
       - run: cargo test
 
   go-checks:
@@ -80,16 +117,20 @@ jobs:
       run:
         working-directory: go
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
 
-      - run: cp -r ../shared ./shared
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      # `make test` copies ../shared into ./shared (not tracked in git) first.
+      - run: make test
       - run: go vet ./...
-      - run: go test -v ./...
 
   terraform-checks:
     name: Terraform (fmt + validate)
@@ -100,16 +141,18 @@ jobs:
       run:
         working-directory: terraform
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
 
       - run: terraform fmt -check -recursive
       - run: terraform init -backend=false
       - run: terraform validate
 
   typescript-checks:
-    name: TypeScript (tsc + build)
+    name: TypeScript (tsc + test + build)
     needs: changes
     if: needs.changes.outputs.typescript == 'true'
     runs-on: ubuntu-latest
@@ -117,9 +160,11 @@ jobs:
       run:
         working-directory: typescript
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
           # Always resolve newest 22.x so runner toolcache can't pin a Node
@@ -130,6 +175,8 @@ jobs:
 
       - run: npm ci
       - run: npx tsc --noEmit
+      # jest.config.js carries the coverageThreshold gate.
+      - run: npm test -- --coverage
       - run: npx webpack
 
   integration-tests-rust:
@@ -137,72 +184,60 @@ jobs:
     needs: [changes, rust-checks]
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: rust
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: fastly/compute-actions/setup@v6
+      - uses: fastly/compute-actions/setup@0364c1d9c6f85bfe74633443e44c04cf1972ab54 # v6
 
       - run: rustup target add wasm32-wasip1
 
       - name: Build Compute package
+        working-directory: rust
         run: fastly compute build
 
-      - name: Start Viceroy and run tests
-        run: |
-          fastly compute serve &
-          for i in $(seq 1 30); do
-            curl -s http://127.0.0.1:7676/ > /dev/null 2>&1 && break
-            sleep 1
-          done
-          ./tests/integration.sh
+      - name: Run integration suite under Viceroy
+        run: scripts/run-integration.sh rust
 
   integration-tests-go:
     name: Integration — Go (Viceroy)
     needs: [changes, go-checks]
     if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: go
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: fastly/compute-actions/setup@v6
+      - uses: fastly/compute-actions/setup@0364c1d9c6f85bfe74633443e44c04cf1972ab54 # v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
 
+      # `make build` copies ../shared into ./shared, then runs `fastly compute build`.
       - name: Build Compute package
+        working-directory: go
         run: make build
 
-      - name: Start Viceroy and run tests
-        run: |
-          fastly compute serve &
-          for i in $(seq 1 30); do
-            curl -s http://127.0.0.1:7676/ > /dev/null 2>&1 && break
-            sleep 1
-          done
-          ../rust/tests/integration.sh
+      - name: Run integration suite under Viceroy
+        run: scripts/run-integration.sh go
 
   integration-tests-typescript:
     name: Integration — TypeScript (Viceroy)
     needs: [changes, typescript-checks]
     if: needs.changes.outputs.typescript == 'true'
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: typescript
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: fastly/compute-actions/setup@v6
+      - uses: fastly/compute-actions/setup@0364c1d9c6f85bfe74633443e44c04cf1972ab54 # v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
           # Always resolve newest 22.x so runner toolcache can't pin a Node
@@ -211,45 +246,61 @@ jobs:
           cache: npm
           cache-dependency-path: typescript/package-lock.json
 
-      - run: npm ci
+      - name: Install dependencies
+        working-directory: typescript
+        run: npm ci
 
       - name: Build Compute package
+        working-directory: typescript
         run: fastly compute build
 
-      - name: Start Viceroy and run tests
-        run: |
-          fastly compute serve &
-          for i in $(seq 1 30); do
-            curl -s http://127.0.0.1:7676/ > /dev/null 2>&1 && break
-            sleep 1
-          done
-          ../rust/tests/integration.sh
+      - name: Run integration suite under Viceroy
+        run: scripts/run-integration.sh typescript
 
   vcl-checks:
-    name: VCL (falco fmt + lint)
+    name: VCL (falco lint of Terraform snippets)
     needs: changes
     if: needs.changes.outputs.vcl == 'true'
     runs-on: ubuntu-latest
+    env:
+      # Pinned release + checksum. Checksum is the `digest` GitHub publishes for
+      # the release asset (gh api repos/ysugimoto/falco/releases/tags/v2.3.0),
+      # confirmed against a local download. Update both together.
+      FALCO_VERSION: v2.3.0
+      FALCO_SHA256: 9888d04cd63a6b1058ecf228997f7ee6a18480394bfa9e5e00c8d8f46d03d19f
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - name: Install falco
+      - name: Install falco (checksum verified)
         run: |
-          curl -sL "https://github.com/ysugimoto/falco/releases/latest/download/falco-linux-amd64.tar.gz" | sudo tar xz -C /usr/local/bin --strip-components=0
+          set -euo pipefail
+          tarball="$RUNNER_TEMP/falco-linux-amd64.tar.gz"
+          curl -fsSL -o "$tarball" \
+            "https://github.com/ysugimoto/falco/releases/download/${FALCO_VERSION}/falco-linux-amd64.tar.gz"
+          echo "${FALCO_SHA256}  ${tarball}" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/falco-bin"
+          tar -xzf "$tarball" -C "$RUNNER_TEMP/falco-bin"
+          echo "$RUNNER_TEMP/falco-bin" >> "$GITHUB_PATH"
 
-      - name: falco fmt --check
-        run: find edge-cms -name '*.vcl' -exec falco fmt --check {} +
+      - name: falco version
+        run: falco -V
 
-      - name: falco lint
-        run: find edge-cms -name '*.vcl' -exec falco lint {} +
+      # VCL lives inline in terraform/vcl.tf; extract each snippet, wrap it in
+      # its subroutine and lint it.
+      - name: falco lint (extracted Terraform snippets)
+        run: scripts/lint-vcl.sh terraform/vcl.tf
 
   dependency-audit:
     name: Dependency vulnerability audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
           check-latest: true
@@ -258,7 +309,7 @@ jobs:
         working-directory: typescript
         run: npm audit --omit=dev --audit-level=moderate
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
@@ -266,10 +317,12 @@ jobs:
       - name: govulncheck
         working-directory: go
         run: |
-          cp -r ../shared ./shared
+          make copy-shared
           go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
 
       - name: cargo audit
         working-directory: rust
@@ -281,7 +334,13 @@ jobs:
     name: Detect secrets
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - run: pip install detect-secrets==1.5.0
-      - run: detect-secrets scan --baseline .secrets.baseline
+      # detect-secrets-hook (unlike `scan`) exits non-zero when it finds a
+      # secret that is not in the baseline. Known test fixtures are allowed by
+      # the baseline's filters (see .secrets.baseline).
+      - name: Fail on new secrets
+        run: git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline
